@@ -1,0 +1,436 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Word Auction - English Vocabulary Game</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app-container">
+
+    <!-- HEADER -->
+    <header class="main-header">
+        <div class="brand">
+            <div class="brand-icon">W</div>
+            <div>
+                <h1>WORD AUCTION</h1>
+                <p>ENGLISH VOCABULARY BATTLE</p>
+            </div>
+        </div>
+
+        <div class="header-user">
+            <span id="connectionStatus">● Chưa kết nối</span>
+            <span id="headerNickname">Khách</span>
+        </div>
+    </header>
+
+    <main>
+
+        <!-- HOME SCREEN -->
+        <section id="homeScreen" class="screen active">
+
+            <div class="hero-section">
+                <div class="hero-label">MULTIPLAYER VOCABULARY GAME</div>
+                <h2>THỬ THÁCH <span>VỐN TỪ</span><br>TIẾNG ANH CỦA BẠN</h2>
+                <p>
+                    Đọc từ vựng, lựa chọn nghĩa chính xác và đặt điểm cược.
+                    Ai có chiến thuật tốt nhất sẽ chiến thắng!
+                </p>
+            </div>
+
+            <!-- PLAYER PROFILE -->
+            <div class="panel profile-panel">
+                <div>
+                    <div class="section-label">NGƯỜI CHƠI</div>
+                    <h3 id="profileNickname">Đang tải...</h3>
+                    <p>Điểm hiện có</p>
+                </div>
+
+                <div class="profile-account-actions" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;">
+                    <button id="editNicknameBtn" type="button" class="btn btn-outline">ĐỔI BIỆT DANH</button>
+                    <button id="switchPlayerBtn" type="button" class="btn btn-outline">ĐỔI NGƯỜI CHƠI</button>
+                </div>
+
+                <div class="profile-score">
+                    <strong id="profilePoints">1,000</strong>
+                    <span>ĐIỂM</span>
+                </div>
+            </div>
+
+            <!-- ROOM ACTIONS -->
+            <div class="home-grid">
+
+                <div class="panel action-panel">
+                    <div class="action-icon">＋</div>
+                    <h3>Tạo phòng mới</h3>
+                    <p>Tạo phòng đấu giá và mời bạn bè cùng tham gia.</p>
+
+                    <label for="roomDuration">Thời gian trận đấu</label>
+                    <select id="roomDuration">
+                        <option value="5">5 phút</option>
+                        <option value="10" selected>10 phút</option>
+                        <option value="15">15 phút</option>
+                    </select>
+
+                    <button id="createRoomBtn" class="btn btn-primary">
+                        TẠO PHÒNG
+                    </button>
+                </div>
+
+                <div class="panel action-panel">
+                    <div class="action-icon">⇢</div>
+                    <h3>Tham gia phòng</h3>
+                    <p>Nhập mã phòng để tham gia cùng những người chơi khác.</p>
+
+                    <label for="joinRoomCode">Mã phòng</label>
+                    <input
+                        type="text"
+                        id="joinRoomCode"
+                        placeholder="Nhập mã phòng..."
+                        maxlength="10"
+                    >
+
+                    <button id="joinRoomBtn" class="btn btn-secondary">
+                        THAM GIA
+                    </button>
+                </div>
+
+            </div>
+
+            <div class="panel rules-panel">
+                <h3>LUẬT CHƠI</h3>
+                <div class="rules-grid">
+                    <div>
+                        <strong>01</strong>
+                        <p>Mỗi câu hỏi có 6 đáp án tiếng Việt.</p>
+                    </div>
+                    <div>
+                        <strong>02</strong>
+                        <p>Chọn đáp án và đặt số điểm muốn cược.</p>
+                    </div>
+                    <div>
+                        <strong>03</strong>
+                        <p>Đúng được cộng điểm, sai bị trừ điểm cược.</p>
+                    </div>
+                    <div>
+                        <strong>04</strong>
+                        <p>Hết thời gian, người có tổng điểm cao nhất thắng.</p>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+
+        <!-- WAITING ROOM -->
+        <section id="waitingScreen" class="screen">
+
+            <div class="page-heading">
+                <span class="section-label">PHÒNG ĐẤU GIÁ</span>
+                <h2>PHÒNG CHỜ</h2>
+            </div>
+
+            <div class="panel room-info-panel">
+                <div>
+                    <p>MÃ PHÒNG</p>
+                    <h2 id="waitingRoomCode">------</h2>
+                </div>
+
+                <div>
+                    <p>THỜI GIAN</p>
+                    <h2 id="waitingDuration">10 phút</h2>
+                </div>
+
+                <div>
+                    <p>TRẠNG THÁI</p>
+                    <h2 id="waitingStatus">Đang chờ</h2>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-heading">
+                    <h3>DANH SÁCH NGƯỜI CHƠI</h3>
+                    <span id="waitingPlayerCount">0 người</span>
+                </div>
+
+                <div id="waitingPlayerList" class="player-list">
+                    <!-- Danh sách người chơi được tạo bằng JavaScript -->
+                </div>
+            </div>
+
+            <div class="waiting-actions">
+                <button id="startGameBtn" class="btn btn-primary">
+                    BẮT ĐẦU TRẬN ĐẤU
+                </button>
+
+                <button id="leaveWaitingBtn" class="btn btn-outline">
+                    RỜI PHÒNG
+                </button>
+            </div>
+
+            <p class="help-text" id="waitingHelpText">
+                Chỉ chủ phòng mới có quyền bắt đầu trận đấu.
+            </p>
+
+        </section>
+
+
+        <!-- GAME SCREEN -->
+        <section id="gameScreen" class="screen">
+
+            <!-- GAME HEADER -->
+            <div class="game-topbar">
+                <div class="game-room">
+                    <span>PHÒNG</span>
+                    <strong id="gameRoomCode">------</strong>
+                </div>
+
+                <div class="game-timer">
+                    <span>THỜI GIAN CÒN LẠI</span>
+                    <strong id="gameTimer">10:00</strong>
+                </div>
+
+                <div class="game-players">
+                    <span>NGƯỜI CHƠI</span>
+                    <strong id="gamePlayerCount">0</strong>
+                </div>
+            </div>
+
+            <!-- CURRENT SCORE -->
+            <div class="game-score-panel">
+                <div>
+                    <span>ĐIỂM HIỆN CÓ</span>
+                    <strong id="gameMyPoints">1,000</strong>
+                </div>
+
+                <div>
+                    <span>TRẠNG THÁI</span>
+                    <strong id="gamePlayerStatus">Đang chơi</strong>
+                </div>
+
+                <div>
+                    <span>CHỦ PHÒNG</span>
+                    <strong id="gameHostName">---</strong>
+                </div>
+            </div>
+
+            <!-- QUESTION -->
+            <div class="panel question-panel">
+
+                <div class="question-header">
+    <span class="section-label">ENGLISH VOCABULARY</span>
+    <span id="questionNumber">CÂU HỎI #1</span>
+    <strong id="questionCountdown">10s</strong>
+</div>
+
+                <div class="question-word">
+                    <h2 id="questionWord">EXCELLENT SKILL</h2>
+                    <p id="questionPhonetic">/ˈeksələnt skɪl/</p>
+                    <span id="questionType">Cụm danh từ</span>
+                </div>
+
+                <div class="answer-heading">
+                    <h3>CHỌN NGHĨA TIẾNG VIỆT</h3>
+                    <p>Chỉ được chọn một đáp án.</p>
+                </div>
+
+                <div id="answerOptions" class="answer-grid">
+
+                    <button class="answer-option" data-index="0">
+                        <span class="option-letter">A</span>
+                        <span class="option-text">Kỹ năng xuất sắc</span>
+                    </button>
+
+                    <button class="answer-option" data-index="1">
+                        <span class="option-letter">B</span>
+                        <span class="option-text">Dự án sắp tới</span>
+                    </button>
+
+                    <button class="answer-option" data-index="2">
+                        <span class="option-letter">C</span>
+                        <span class="option-text">Phòng trưng bày</span>
+                    </button>
+
+                    <button class="answer-option" data-index="3">
+                        <span class="option-letter">D</span>
+                        <span class="option-text">Vấn đề chính trị</span>
+                    </button>
+
+                    <button class="answer-option" data-index="4">
+                        <span class="option-letter">E</span>
+                        <span class="option-text">Tìm kiếm</span>
+                    </button>
+
+                    <button class="answer-option" data-index="5">
+                        <span class="option-letter">F</span>
+                        <span class="option-text">Chuyên về</span>
+                    </button>
+
+                </div>
+
+                <!-- BET -->
+                <div class="bet-section">
+                    <div class="bet-heading">
+                        <div>
+                            <h3>ĐIỂM CƯỢC</h3>
+                            <p>Chọn số điểm bạn muốn đặt cược.</p>
+                        </div>
+
+                        <div class="bet-available">
+                            Có thể cược:
+                            <strong id="availableBetPoints">1,000</strong>
+                        </div>
+                    </div>
+
+                    <div class="bet-controls">
+                        <button class="bet-shortcut" data-bet="100">100</button>
+                        <button class="bet-shortcut" data-bet="250">250</button>
+                        <button class="bet-shortcut" data-bet="500">500</button>
+                        <button class="bet-shortcut" data-bet="1000">Tất cả</button>
+                    </div>
+
+                    <input
+                        type="number"
+                        id="betAmount"
+                        min="1"
+                        placeholder="Nhập điểm cược..."
+                    >
+
+                    <p id="betMessage" class="help-text">
+    Chọn số điểm cược, sau đó chọn đáp án. Hệ thống sẽ tự động gửi.
+</p>
+
+                    <p id="betMessage" class="help-text">
+                        Hãy chọn đáp án và nhập điểm cược.
+                    </p>
+                </div>
+
+            </div>
+
+
+            <!-- GAME SIDEBAR / LEADERBOARD -->
+            <div class="panel leaderboard-panel">
+                <div class="panel-heading">
+                    <h3>BẢNG XẾP HẠNG</h3>
+                    <span>ĐIỂM HIỆN TẠI</span>
+                </div>
+
+                <div id="gameLeaderboard" class="leaderboard-list">
+                    <!-- Bảng xếp hạng được cập nhật bằng JavaScript -->
+                </div>
+            </div>
+
+            <div class="game-footer">
+
+                <button id="leaveGameBtn" class="btn btn-outline">
+                    RỜI PHÒNG
+                </button>
+            </div>
+
+        </section>
+
+
+        <!-- RESULT SCREEN -->
+        <section id="resultScreen" class="screen">
+
+            <div class="result-hero">
+                <div class="result-icon">🏆</div>
+                <span class="section-label">TRẬN ĐẤU KẾT THÚC</span>
+                <h2>BẢNG XẾP HẠNG CUỐI CÙNG</h2>
+                <p>Thời gian đấu giá đã kết thúc.</p>
+            </div>
+
+            <div class="panel result-panel">
+                <div id="finalLeaderboard" class="leaderboard-list">
+                    <!-- Kết quả cuối cùng -->
+                </div>
+            </div>
+
+            <div class="result-actions">
+                <button id="backHomeBtn" class="btn btn-primary">
+                    VỀ TRANG CHỦ
+                </button>
+            </div>
+
+        </section>
+
+
+        <!-- ADMIN SCREEN -->
+        <section id="adminScreen" class="screen">
+
+            <div class="page-heading">
+                <span class="section-label">ADMINISTRATION</span>
+                <h2>QUẢN LÝ TỪ VỰNG</h2>
+                <p>Nhập dữ liệu từ vựng bằng định dạng JSON.</p>
+            </div>
+
+            <div class="panel admin-panel">
+
+                <h3>NHẬP DỮ LIỆU JSON</h3>
+
+                <p class="help-text">
+                    Mỗi từ vựng cần có từ loại, phiên âm và nghĩa tiếng Việt.
+                    Dữ liệu phải có đủ số lượng nghĩa khác nhau để tạo 6 đáp án.
+                </p>
+
+                <textarea
+                    id="vocabularyJson"
+                    rows="14"
+                    placeholder='[
+  {
+    "tuVung": "excellent skill",
+    "tuLoai": "Cụm danh từ",
+    "phienAm": "/ˈeksələnt skɪl/",
+    "nghiaTiengViet": "Kỹ năng xuất sắc"
+  }
+]'
+                ></textarea>
+
+                <div class="admin-actions">
+                    <input type="file" id="vocabularyFile" accept=".json">
+
+                    <button id="importVocabularyBtn" class="btn btn-primary">
+                        NHẬP TỪ VỰNG
+                    </button>
+                </div>
+
+                <p id="importMessage" class="help-text"></p>
+
+            </div>
+
+            <button id="adminBackBtn" class="btn btn-outline">
+                QUAY LẠI
+            </button>
+
+        </section>
+
+    </main>
+
+
+    <!-- NOTIFICATION -->
+    <div id="notification" class="notification hidden"></div>
+
+
+    <!-- FOOTER -->
+    <footer class="main-footer">
+        <p>WORD AUCTION © 2026</p>
+        <p>LEARN ENGLISH • THINK FAST • BET SMART</p>
+    </footer>
+
+</div>
+
+
+<!-- SUPABASE LIBRARY -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<!-- APP CONFIGURATION -->
+<script src="config.js"></script>
+
+<!-- MAIN APPLICATION -->
+<script src="app.js"></script>
+
+</body>
+</html>
