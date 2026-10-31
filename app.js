@@ -1,6 +1,8 @@
+
 /* ==========================================
    WORD AUCTION - APPLICATION
    Supabase JavaScript v2
+   Updated: Persistent wager + 10-second settlement
    ========================================== */
 
 (() => {
@@ -47,6 +49,8 @@
         selectedAnswer: null,
         hasBet: false,
 
+        wagerPoints: 100,
+
         isHost: false,
         isSpectator: false,
 
@@ -61,7 +65,9 @@
 
         isSubmitting: false,
         isCreatingQuestion: false,
-        isFinishing: false
+        isFinishing: false,
+        isSettlingQuestion: false,
+        settledQuestionId: null
     };
 
     const $ = id => document.getElementById(id);
@@ -195,6 +201,22 @@
         state.timerInterval = null;
     }
 
+    function getCurrentPlayer() {
+        return state.players.find(
+            player => player.user_id === state.user?.id
+        );
+    }
+
+    function getCurrentPoints() {
+        const player = getCurrentPlayer();
+
+        return Number(
+            player?.points ??
+            state.profile?.points ??
+            1000
+        );
+    }
+
     // ==========================================
     // 4. AUTHENTICATION
     // ==========================================
@@ -305,9 +327,7 @@
 
         if (!state.room) return;
 
-        const player = state.players.find(
-            item => item.user_id === state.user.id
-        );
+        const player = getCurrentPlayer();
 
         if (!player) return;
 
@@ -329,6 +349,8 @@
             "gamePlayerStatus",
             state.isSpectator ? "Khán giả" : "Đang chơi"
         );
+
+        updateBetAvailability();
 
         if (state.isSpectator) {
             disableBetting(
@@ -545,6 +567,7 @@
         if (room.status === "active") {
             showScreen("gameScreen");
 
+            await loadMyWager();
             await loadCurrentQuestion();
 
             startTimer();
@@ -576,7 +599,6 @@
 
         state.players = data || [];
 
-        // Lấy nickname từ profiles để hiển thị danh sách.
         try {
             const userIds = state.players
                 .map(player => player.user_id)
@@ -615,6 +637,21 @@
 
         renderWaitingPlayers();
         renderLeaderboard();
+        updateBetAvailability();
+
+        const me = getCurrentPlayer();
+
+        if (me) {
+            state.isSpectator =
+                !!me.is_spectator ||
+                Number(me.points) <= 0;
+
+            if (state.isSpectator) {
+                disableBetting(
+                    "Bạn đã hết điểm và chuyển sang chế độ khán giả."
+                );
+            }
+        }
     }
 
     function renderWaitingRoom() {
@@ -722,6 +759,7 @@
                         if (payload.new.status === "active") {
                             showScreen("gameScreen");
 
+                            await loadMyWager();
                             await loadCurrentQuestion();
 
                             startTimer();
@@ -775,7 +813,6 @@
                     try {
                         if (!payload.new) return;
 
-                        // Tránh xử lý lại câu hỏi đang hiển thị.
                         if (
                             state.question?.id === payload.new.id
                         ) {
@@ -790,10 +827,12 @@
 
                         state.selectedAnswer = null;
                         state.hasBet = false;
+                        state.settledQuestionId = null;
+                        state.isSubmitting = false;
 
                         renderQuestion();
 
-                        await checkMyBet();
+                        await checkMyAnswer();
 
                         startQuestionTimer();
 
@@ -840,22 +879,13 @@
 
             if (error) throw error;
 
-            const { error: questionError } =
-                await supabaseClient.rpc(
-                    "create_auction_question",
-                    {
-                        p_room_id: state.room.id
-                    }
-                );
-
-            if (questionError) {
-                throw questionError;
-            }
+            // Không gọi create_auction_question ở đây.
+            // start_auction_room đã tự tạo câu hỏi đầu tiên.
 
             showScreen("gameScreen");
 
             await refreshPlayers();
-
+            await loadMyWager();
             await loadCurrentQuestion();
 
             startTimer();
@@ -876,7 +906,92 @@
     }
 
     // ==========================================
-    // 11. QUESTIONS
+    // 11. WAGER SETTINGS
+    // ==========================================
+
+    async function loadMyWager() {
+        if (!state.room) return;
+
+        const { data, error } = await supabaseClient.rpc(
+            "get_auction_wager",
+            {
+                p_room_id: state.room.id
+            }
+        );
+
+        if (error) {
+            console.error("Load wager error:", error);
+
+            state.wagerPoints = 100;
+
+            if ($("betAmount")) {
+                $("betAmount").value = 100;
+            }
+
+            return;
+        }
+
+        state.wagerPoints = Number(
+            data?.wager_points || 100
+        );
+
+        if ($("betAmount")) {
+            $("betAmount").value = state.wagerPoints;
+        }
+
+        updateBetAvailability();
+    }
+
+    async function saveMyWager(value) {
+        if (!state.room || !state.user) return false;
+
+        const wager = Number(value);
+
+        if (
+            !Number.isInteger(wager) ||
+            wager <= 0
+        ) {
+            showNotification(
+                "Mức cược phải là số nguyên lớn hơn 0.",
+                "error"
+            );
+            return false;
+        }
+
+        if (wager > getCurrentPoints()) {
+            showNotification(
+                "Mức cược vượt quá số điểm hiện có.",
+                "error"
+            );
+            return false;
+        }
+
+        const { data, error } = await supabaseClient.rpc(
+            "set_auction_wager",
+            {
+                p_room_id: state.room.id,
+                p_wager_points: wager
+            }
+        );
+
+        if (error) {
+            handleError(error, "Không thể lưu mức cược");
+            return false;
+        }
+
+        state.wagerPoints = Number(
+            data?.wager_points || wager
+        );
+
+        if ($("betAmount")) {
+            $("betAmount").value = state.wagerPoints;
+        }
+
+        return true;
+    }
+
+    // ==========================================
+    // 12. QUESTIONS
     // ==========================================
 
     async function loadCurrentQuestion() {
@@ -907,126 +1022,152 @@
         if (isNewQuestion) {
             state.selectedAnswer = null;
             state.hasBet = false;
+            state.settledQuestionId = null;
+            state.isSubmitting = false;
         }
 
         renderQuestion();
 
-        await checkMyBet();
+        await checkMyAnswer();
 
         startQuestionTimer();
     }
 
     function renderQuestion() {
-    if (!state.question) return;
+        if (!state.question) return;
 
-    const question = state.question;
+        const question = state.question;
 
-    // Mã phòng
-    $("gameRoomCode").textContent =
-        state.room?.room_code || state.room?.code || "";
+        setText(
+            "gameRoomCode",
+            state.room?.room_code || state.room?.code || ""
+        );
 
-    // Số thứ tự câu hỏi
-    $("questionNumber").textContent =
-        "CÂU HỎI #" + (question.sequence_no || state.questionNumber);
+        setText(
+            "questionNumber",
+            "CÂU HỎI #" +
+            (question.sequence_no || state.questionNumber)
+        );
 
-    // Từ vựng tiếng Anh
-    $("questionWord").textContent =
-        question.tu_vung ||
-        question.word ||
-        question.english_word ||
-        "---";
+        setText(
+            "questionWord",
+            question.tu_vung ||
+            question.word ||
+            question.english_word ||
+            "---"
+        );
 
-    // Phiên âm
-    $("questionPhonetic").textContent =
-        question.phien_am ||
-        question.phonetic ||
-        "";
+        setText(
+            "questionPhonetic",
+            question.phien_am ||
+            question.phonetic ||
+            ""
+        );
 
-    // Từ loại
-    $("questionType").textContent =
-        question.tu_loai ||
-        question.word_type ||
-        "";
+        setText(
+            "questionType",
+            question.tu_loai ||
+            question.word_type ||
+            ""
+        );
 
-    // Đọc danh sách đáp án
-    let options = question.options || [];
+        let options = question.options || [];
 
-    // Trường hợp options được lưu dưới dạng JSON string
-    if (typeof options === "string") {
-        try {
-            options = JSON.parse(options);
-        } catch (error) {
-            console.error("Lỗi đọc dữ liệu đáp án:", error);
-            options = [];
-        }
-    }
-
-    const answerContainer = $("answerOptions");
-    answerContainer.innerHTML = "";
-
-    if (!Array.isArray(options) || options.length === 0) {
-        answerContainer.textContent = "Không có dữ liệu đáp án.";
-        console.error("Dữ liệu options không hợp lệ:", question.options);
-        return;
-    }
-
-    // Hiển thị các đáp án
-    options.forEach((option, index) => {
-        const button = document.createElement("button");
-        button.className = "answer-option";
-        button.dataset.index = index;
-
-        // Chữ cái A, B, C, D...
-        const letter = document.createElement("span");
-        letter.className = "option-letter";
-        letter.textContent = String.fromCharCode(65 + index);
-
-        // Nghĩa tiếng Việt
-        const text = document.createElement("span");
-        text.className = "option-text";
-
-        let meaning = "";
-
-        if (typeof option === "string") {
-            meaning = option;
-        } else if (option && typeof option === "object") {
-            meaning =
-                option.nghia_tieng_viet ||
-                option.nghiaTiengViet ||
-                option.nghia ||
-                option.meaning ||
-                option.text ||
-                option.label ||
-                option.value ||
-                "";
+        if (typeof options === "string") {
+            try {
+                options = JSON.parse(options);
+            } catch (error) {
+                console.error(
+                    "Lỗi đọc dữ liệu đáp án:",
+                    error
+                );
+                options = [];
+            }
         }
 
-        text.textContent = meaning || "Chưa có nghĩa tiếng Việt";
+        const answerContainer = $("answerOptions");
 
-        button.append(letter, text);
+        if (!answerContainer) return;
 
-        // Chọn đáp án
-        button.addEventListener("click", () => {
-            selectAnswer(index);
+        answerContainer.innerHTML = "";
+
+        if (!Array.isArray(options) || options.length === 0) {
+            answerContainer.textContent =
+                "Không có dữ liệu đáp án.";
+
+            console.error(
+                "Dữ liệu options không hợp lệ:",
+                question.options
+            );
+
+            return;
+        }
+
+        options.forEach((option, index) => {
+            const button = document.createElement("button");
+
+            button.className = "answer-option";
+            button.dataset.index = index;
+
+            const letter = document.createElement("span");
+
+            letter.className = "option-letter";
+            letter.textContent =
+                String.fromCharCode(65 + index);
+
+            const text = document.createElement("span");
+
+            text.className = "option-text";
+
+            let meaning = "";
+
+            if (typeof option === "string") {
+                meaning = option;
+            } else if (option && typeof option === "object") {
+                meaning =
+                    option.nghia_tieng_viet ||
+                    option.nghiaTiengViet ||
+                    option.nghia ||
+                    option.meaning ||
+                    option.text ||
+                    option.label ||
+                    option.value ||
+                    "";
+            }
+
+            text.textContent =
+                meaning || "Chưa có nghĩa tiếng Việt";
+
+            button.append(letter, text);
+
+            button.addEventListener("click", () => {
+                selectAnswer(index);
+            });
+
+            answerContainer.appendChild(button);
         });
 
-        answerContainer.appendChild(button);
-    });
+        // Không xóa mức cược khi chuyển câu.
+        if ($("betAmount")) {
+            $("betAmount").value = state.wagerPoints || 100;
+        }
 
-    // Reset ô nhập điểm cược
-    $("betAmount").value = "";
+        setText(
+            "betMessage",
+            "Chọn đáp án. Hệ thống tự ghi nhận câu trả lời."
+        );
 
-    // Thông báo
-    $("betMessage").textContent =
-        "Hãy chọn đáp án và nhập điểm cược.";
+        enableBetting();
+        updateBetAvailability();
+    }
 
-    // Giữ nguyên chức năng đặt cược
-    enableBetting();
-    updateBetAvailability();
-}
+    // ==========================================
+    // 13. SELECT ANSWER - AUTO SAVE
+    // ==========================================
 
-    function selectAnswer(index) {
+    async function selectAnswer(index) {
         if (
+            !state.question ||
             state.hasBet ||
             state.isSpectator ||
             state.isSubmitting
@@ -1034,46 +1175,111 @@
             return;
         }
 
-        state.selectedAnswer = index;
+        if (
+            state.questionDeadline &&
+            Date.now() >= state.questionDeadline
+        ) {
+            showNotification(
+                "Đã hết thời gian trả lời.",
+                "error"
+            );
+            return;
+        }
+
+        state.isSubmitting = true;
 
         document.querySelectorAll(".answer-option")
             .forEach(button => {
-                button.classList.toggle(
-                    "selected",
-                    Number(button.dataset.index) === index
-                );
+                button.disabled = true;
             });
+
+        try {
+            const { error } = await supabaseClient.rpc(
+                "save_auction_answer",
+                {
+                    p_question_id: state.question.id,
+                    p_answer_index: index
+                }
+            );
+
+            if (error) throw error;
+
+            state.selectedAnswer = index;
+            state.hasBet = true;
+
+            document.querySelectorAll(".answer-option")
+                .forEach((button, buttonIndex) => {
+                    button.disabled = true;
+
+                    button.classList.toggle(
+                        "selected",
+                        buttonIndex === index
+                    );
+                });
+
+            setText(
+                "betMessage",
+                "Đã ghi nhận đáp án. Đang chờ hết giờ để chốt điểm."
+            );
+
+        } catch (error) {
+            handleError(
+                error,
+                "Không thể gửi đáp án"
+            );
+
+            enableBetting();
+
+        } finally {
+            state.isSubmitting = false;
+        }
     }
 
-    async function checkMyBet() {
+    // ==========================================
+    // 14. CHECK MY ANSWER
+    // ==========================================
+
+    async function checkMyAnswer() {
         if (!state.question || !state.user) return;
 
         const { data, error } = await supabaseClient
-            .from("auction_bets")
-            .select("id")
+            .from("auction_question_answers")
+            .select("answer_index")
             .eq("question_id", state.question.id)
             .eq("user_id", state.user.id)
             .maybeSingle();
 
         if (error) {
             console.warn(
-                "Không kiểm tra được lượt cược:",
+                "Không kiểm tra được đáp án:",
                 error
             );
             return;
         }
 
         if (data) {
+            state.selectedAnswer = data.answer_index;
             state.hasBet = true;
 
-            disableBetting(
-                "Bạn đã đặt điểm cho câu hỏi này."
+            document.querySelectorAll(".answer-option")
+                .forEach((button, index) => {
+                    button.disabled = true;
+
+                    button.classList.toggle(
+                        "selected",
+                        index === Number(data.answer_index)
+                    );
+                });
+
+            setText(
+                "betMessage",
+                "Bạn đã trả lời câu hỏi này. Đang chờ chốt điểm."
             );
         }
     }
 
     // ==========================================
-    // 12. QUESTION TIMER - 10 SECONDS
+    // 15. QUESTION TIMER
     // ==========================================
 
     function startQuestionTimer() {
@@ -1087,7 +1293,6 @@
             ? new Date(state.question.created_at).getTime()
             : Date.now();
 
-        // Mỗi câu hỏi có thời gian trả lời 10 giây.
         state.questionDeadline = createdAt + 10000;
 
         const update = async () => {
@@ -1095,7 +1300,8 @@
                 !state.question ||
                 state.question.id !== questionId
             ) {
-                clearQuestionTimers();
+                clearInterval(state.questionInterval);
+                state.questionInterval = null;
                 return;
             }
 
@@ -1106,8 +1312,13 @@
                 )
             );
 
-            // Hiển thị thời gian trong phần thông báo cược.
-            if (!state.hasBet) {
+            const countdown = $("questionCountdown");
+
+            if (countdown) {
+                countdown.textContent = remaining;
+            }
+
+            if (!state.hasBet && remaining > 0) {
                 setText(
                     "betMessage",
                     "Thời gian còn lại: " + remaining + " giây"
@@ -1118,25 +1329,11 @@
                 clearInterval(state.questionInterval);
                 state.questionInterval = null;
 
-                // Hết giờ, người chưa trả lời sẽ được ghi nhận timeout.
-                if (!state.hasBet && !state.isSpectator) {
-                    await submitTimeout(questionId);
-                }
+                disableBetting(
+                    "Đã hết 10 giây. Hệ thống đang chốt điểm..."
+                );
 
-                // Chỉ chủ phòng được quyền tạo câu tiếp theo.
-                if (state.isHost) {
-                    state.nextQuestionTimeout = setTimeout(
-                        async () => {
-                            if (
-                                state.question?.id === questionId &&
-                                state.room?.status === "active"
-                            ) {
-                                await nextQuestion();
-                            }
-                        },
-                        1000
-                    );
-                }
+                await settleCurrentQuestion(questionId);
             }
         };
 
@@ -1144,74 +1341,108 @@
 
         state.questionInterval = setInterval(
             update,
-            250
+            200
         );
     }
 
-    async function submitTimeout(questionId) {
+    // ==========================================
+    // 16. SETTLE QUESTION
+    // ==========================================
+
+    async function settleCurrentQuestion(questionId) {
         if (
-            !state.question ||
-            state.question.id !== questionId ||
-            state.hasBet ||
-            state.isSpectator
+            !questionId ||
+            state.isSettlingQuestion ||
+            state.settledQuestionId === questionId
         ) {
             return;
         }
 
-        // Đánh dấu trước để tránh gửi nhiều lần.
-        state.hasBet = true;
-
-        disableBetting(
-            "Hết thời gian trả lời. Đang ghi nhận lượt chơi..."
-        );
+        state.isSettlingQuestion = true;
 
         try {
-            const { error } = await supabaseClient.rpc(
-                "place_auction_bet",
+            const { data, error } = await supabaseClient.rpc(
+                "settle_auction_question",
                 {
-                    p_question_id: questionId,
-                    p_answer_index: null,
-                    p_bet_points: 0
+                    p_question_id: questionId
                 }
             );
 
             if (error) throw error;
 
-            setText(
-                "betMessage",
-                "Bạn đã hết thời gian trả lời."
+            state.settledQuestionId = questionId;
+            state.hasBet = true;
+
+            disableBetting(
+                "Đã hết giờ. Hệ thống đã chốt điểm."
             );
 
+            if (
+                data &&
+                data.correct_index !== undefined &&
+                data.correct_index !== null
+            ) {
+                document.querySelectorAll(".answer-option")
+                    .forEach((button, index) => {
+                        button.disabled = true;
+
+                        if (index === Number(data.correct_index)) {
+                            button.classList.add("correct");
+                        }
+                    });
+            }
+
             await refreshPlayers();
+            await refreshProfile();
+
+            setText(
+                "betMessage",
+                "Đã chốt điểm. Chuẩn bị câu hỏi tiếp theo."
+            );
+
+            // Chỉ host tạo câu hỏi tiếp theo.
+            if (
+                state.isHost &&
+                state.room?.status === "active" &&
+                state.question?.id === questionId
+            ) {
+                clearTimeout(state.nextQuestionTimeout);
+
+                state.nextQuestionTimeout = setTimeout(
+                    async () => {
+                        if (
+                            state.question?.id === questionId &&
+                            state.room?.status === "active"
+                        ) {
+                            await nextQuestion();
+                        }
+                    },
+                    1500
+                );
+            }
 
         } catch (error) {
             console.error(
-                "Không thể ghi nhận lượt timeout:",
+                "Không thể chốt câu hỏi:",
                 error
             );
 
-            // Không tự gửi lặp lại vì có thể RPC đã xử lý.
             setText(
                 "betMessage",
-                "Đã hết thời gian trả lời."
+                "Lỗi chốt điểm: " + error.message
             );
+
+        } finally {
+            state.isSettlingQuestion = false;
         }
     }
 
     // ==========================================
-    // 13. BETTING
+    // 17. BETTING UI
     // ==========================================
 
     function updateBetAvailability() {
-        const player = state.players.find(
-            item => item.user_id === state.user?.id
-        );
-
-        const points = Number(
-            player?.points ??
-            state.profile?.points ??
-            1000
-        );
+        const points = getCurrentPoints();
 
         setText(
             "availableBetPoints",
@@ -1220,7 +1451,9 @@
 
         document.querySelectorAll(".bet-shortcut")
             .forEach(button => {
-                if (button.dataset.bet === "1000") {
+                const value = button.dataset.bet;
+
+                if (value === "1000") {
                     button.textContent = "Tất cả";
                 }
             });
@@ -1248,7 +1481,7 @@
             disableBetting(
                 state.isSpectator
                     ? "Bạn đang ở chế độ khán giả."
-                    : "Bạn đã đặt điểm cho câu hỏi này."
+                    : "Bạn đã trả lời câu hỏi này."
             );
             return;
         }
@@ -1263,193 +1496,83 @@
         }
 
         if ($("submitBetBtn")) {
-            $("submitBetBtn").disabled = false;
-        }
-    }
-
-    async function submitBet() {
-        if (
-            !state.question ||
-            !state.room ||
-            state.isSubmitting
-        ) {
-            return;
-        }
-
-        if (state.hasBet) {
-            showNotification(
-                "Bạn đã đặt điểm cho câu hỏi này.",
-                "error"
-            );
-            return;
-        }
-
-        if (state.selectedAnswer === null) {
-            showNotification(
-                "Bạn cần chọn một đáp án.",
-                "error"
-            );
-            return;
-        }
-
-        const betPoints = Number(
-            $("betAmount")?.value
-        );
-
-        if (
-            !Number.isInteger(betPoints) ||
-            betPoints <= 0
-        ) {
-            showNotification(
-                "Điểm cược phải là số nguyên lớn hơn 0.",
-                "error"
-            );
-            return;
-        }
-
-        const player = state.players.find(
-            item => item.user_id === state.user.id
-        );
-
-        const currentPoints = Number(
-            player?.points ??
-            state.profile?.points ??
-            1000
-        );
-
-        if (betPoints > currentPoints) {
-            showNotification(
-                "Điểm cược vượt quá số điểm hiện có.",
-                "error"
-            );
-            return;
-        }
-
-        if (
-            state.questionDeadline &&
-            Date.now() >= state.questionDeadline
-        ) {
-            showNotification(
-                "Đã hết thời gian trả lời.",
-                "error"
-            );
-            return;
-        }
-
-        state.isSubmitting = true;
-
-        setButtonLoading(
-            "submitBetBtn",
-            true,
-            "ĐANG GỬI..."
-        );
-
-        try {
-            const { data, error } =
-                await supabaseClient.rpc(
-                    "place_auction_bet",
-                    {
-                        p_question_id: state.question.id,
-                        p_answer_index: state.selectedAnswer,
-                        p_bet_points: betPoints
-                    }
-                );
-
-            if (error) throw error;
-
-            state.hasBet = true;
-
-            disableBetting(
-                "Đã gửi đáp án và điểm cược. Chờ kết quả."
-            );
-
-            const result = getRpcData({ data });
-
-            if (result?.is_correct === true) {
-                showNotification(
-                    "Chính xác! Bạn được cộng điểm.",
-                    "success"
-                );
-
-            } else if (result?.is_correct === false) {
-                showNotification(
-                    "Chưa chính xác. Bạn bị trừ điểm cược.",
-                    "error"
-                );
-
-            } else {
-                showNotification(
-                    "Đã đặt điểm thành công!",
-                    "success"
-                );
-            }
-
-            await refreshPlayers();
-
-            await refreshProfile();
-
-        } catch (error) {
-            handleError(
-                error,
-                "Không thể đặt điểm"
-            );
-
-        } finally {
-            state.isSubmitting = false;
-
-            if (!state.hasBet) {
-                setButtonLoading(
-                    "submitBetBtn",
-                    false
-                );
-            }
+            $("submitBetBtn").disabled = true;
         }
     }
 
     // ==========================================
-    // 14. BET SHORTCUT BUTTONS
+    // 18. WAGER SHORTCUT BUTTONS
     // ==========================================
 
     document.querySelectorAll(".bet-shortcut")
         .forEach(button => {
-            button.addEventListener("click", () => {
+            button.addEventListener("click", async () => {
                 if (
-                    state.hasBet ||
                     state.isSpectator ||
-                    !state.user
+                    !state.user ||
+                    !state.room
                 ) {
                     return;
                 }
 
-                const player = state.players.find(
-                    item => item.user_id === state.user.id
-                );
-
-                const points = Number(
-                    player?.points ??
-                    state.profile?.points ??
-                    1000
-                );
-
+                const points = getCurrentPoints();
                 const value = button.dataset.bet;
 
-                if (!$("betAmount")) return;
-
-                $("betAmount").value =
+                const wager =
                     value === "1000"
                         ? points
                         : Math.min(Number(value), points);
+
+                if (!Number.isInteger(wager) || wager <= 0) {
+                    showNotification(
+                        "Bạn không còn điểm để cược.",
+                        "error"
+                    );
+                    return;
+                }
+
+                const saved = await saveMyWager(wager);
+
+                if (saved) {
+                    showNotification(
+                        "Đã lưu mức cược " +
+                        formatPoints(wager) +
+                        " điểm.",
+                        "success"
+                    );
+                }
             });
         });
 
     // ==========================================
-    // 15. NEXT QUESTION
+    // 19. SAVE WAGER WHEN INPUT CHANGES
+    // ==========================================
+
+    on("betAmount", "change", async () => {
+        if (
+            state.isSpectator ||
+            !state.room
+        ) {
+            return;
+        }
+
+        await saveMyWager($("betAmount").value);
+    });
+
+    on("betAmount", "keydown", event => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+
+            $("betAmount").blur();
+        }
+    });
+
+    // ==========================================
+    // 20. NEXT QUESTION
     // ==========================================
 
     async function nextQuestion() {
-        if (!state.isHost) {
-            return;
-        }
+        if (!state.isHost) return;
 
         if (
             !state.room ||
@@ -1459,17 +1582,32 @@
             return;
         }
 
+        if (!state.question) return;
+
         state.isCreatingQuestion = true;
 
         clearQuestionTimers();
 
-        setButtonLoading(
-            "nextQuestionBtn",
-            true,
-            "ĐANG TẠO CÂU..."
-        );
-
         try {
+            // Bảo đảm câu hiện tại đã được chốt trước khi tạo câu mới.
+            if (state.settledQuestionId !== state.question.id) {
+                const { error: settleError } =
+                    await supabaseClient.rpc(
+                        "settle_auction_question",
+                        {
+                            p_question_id: state.question.id
+                        }
+                    );
+
+                if (settleError) {
+                    throw settleError;
+                }
+
+                state.settledQuestionId = state.question.id;
+
+                await refreshPlayers();
+            }
+
             const { error } =
                 await supabaseClient.rpc(
                     "create_auction_question",
@@ -1480,12 +1618,9 @@
 
             if (error) throw error;
 
+            // Câu hỏi mới sẽ được nhận qua Realtime.
+            // Tải lại để dự phòng trường hợp Realtime chậm.
             await loadCurrentQuestion();
-
-            showNotification(
-                "Đã tạo câu hỏi mới.",
-                "success"
-            );
 
         } catch (error) {
             handleError(
@@ -1504,7 +1639,7 @@
     }
 
     // ==========================================
-    // 16. LEADERBOARD
+    // 21. LEADERBOARD
     // ==========================================
 
     function renderLeaderboard() {
@@ -1555,9 +1690,7 @@
             });
         }
 
-        const me = state.players.find(
-            player => player.user_id === state.user?.id
-        );
+        const me = getCurrentPlayer();
 
         if (me) {
             setText(
@@ -1573,7 +1706,7 @@
     }
 
     // ==========================================
-    // 17. GAME TIMER
+    // 22. GAME TIMER
     // ==========================================
 
     function startTimer() {
@@ -1620,7 +1753,7 @@
     }
 
     // ==========================================
-    // 18. FINISH GAME
+    // 23. FINISH GAME
     // ==========================================
 
     async function finishGame() {
@@ -1638,6 +1771,29 @@
         clearGameTimer();
 
         try {
+            // Nếu câu cuối đã hết 10 giây thì chốt trước.
+            if (
+                state.question &&
+                state.question.status === "open" &&
+                state.questionDeadline &&
+                Date.now() >= state.questionDeadline
+            ) {
+                const { error: settleError } =
+                    await supabaseClient.rpc(
+                        "settle_auction_question",
+                        {
+                            p_question_id: state.question.id
+                        }
+                    );
+
+                if (settleError) {
+                    console.warn(
+                        "Không thể chốt câu cuối:",
+                        settleError
+                    );
+                }
+            }
+
             const { error } =
                 await supabaseClient.rpc(
                     "finish_auction_room",
@@ -1708,7 +1864,7 @@
     }
 
     // ==========================================
-    // 19. LEAVE ROOM
+    // 24. LEAVE ROOM
     // ==========================================
 
     async function leaveRoom() {
@@ -1739,11 +1895,13 @@
 
             state.selectedAnswer = null;
             state.hasBet = false;
+            state.wagerPoints = 100;
 
             state.isSpectator = false;
             state.isHost = false;
 
             state.questionNumber = 1;
+            state.settledQuestionId = null;
 
             await refreshProfile();
 
@@ -1763,7 +1921,7 @@
     }
 
     // ==========================================
-    // 20. ADMIN - IMPORT VOCABULARY
+    // 25. ADMIN - IMPORT VOCABULARY
     // ==========================================
 
     async function importVocabulary() {
@@ -1878,7 +2036,7 @@
     }
 
     // ==========================================
-    // 21. EVENT LISTENERS
+    // 26. EVENT LISTENERS
     // ==========================================
 
     function on(id, eventName, callback) {
@@ -1905,7 +2063,8 @@
 
     on("leaveWaitingBtn", "click", leaveRoom);
 
-    on("submitBetBtn", "click", submitBet);
+    // Không cần nút submitBetBtn.
+    // Chọn đáp án sẽ tự động gọi save_auction_answer.
 
     on("nextQuestionBtn", "click", nextQuestion);
 
@@ -1915,6 +2074,8 @@
         clearGameTimer();
         clearQuestionTimers();
 
+        unsubscribeRoom();
+
         state.room = null;
         state.players = [];
         state.question = null;
@@ -1923,7 +2084,8 @@
         state.isHost = false;
         state.isSpectator = false;
 
-        unsubscribeRoom();
+        state.wagerPoints = 100;
+        state.settledQuestionId = null;
 
         showScreen("homeScreen");
 
@@ -1954,7 +2116,7 @@
     });
 
     // ==========================================
-    // 22. INITIALIZE APPLICATION
+    // 27. INITIALIZE APPLICATION
     // ==========================================
 
     async function initializeApp() {
