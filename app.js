@@ -6,9 +6,9 @@
 (() => {
     "use strict";
 
-    // ======================================
+    // ==========================================
     // 1. SUPABASE CONFIGURATION
-    // ======================================
+    // ==========================================
 
     const config = window.WORD_AUCTION_CONFIG;
 
@@ -23,16 +23,19 @@
         return;
     }
 
-    const { createClient } = window.supabase;
+    if (!window.supabase?.createClient) {
+        alert("Không tải được thư viện Supabase.");
+        return;
+    }
 
-    const supabaseClient = createClient(
+    const supabaseClient = window.supabase.createClient(
         config.SUPABASE_URL,
         config.SUPABASE_ANON_KEY
     );
 
-    // ======================================
+    // ==========================================
     // 2. APPLICATION STATE
-    // ======================================
+    // ==========================================
 
     const state = {
         user: null,
@@ -48,15 +51,17 @@
         isSpectator: false,
 
         timerInterval: null,
-        questionTimerInterval: null,
-        questionAdvanceTimeout: null,
-        questionDeadline: null,
-
-        isSubmittingBet: false,
-        isAdvancingQuestion: false,
+        questionInterval: null,
+        nextQuestionTimeout: null,
 
         subscriptions: [],
-        questionNumber: 1
+
+        questionNumber: 1,
+        questionDeadline: null,
+
+        isSubmitting: false,
+        isCreatingQuestion: false,
+        isFinishing: false
     };
 
     const $ = id => document.getElementById(id);
@@ -64,38 +69,17 @@
     const formatPoints = value =>
         Number(value || 0).toLocaleString("vi-VN");
 
-    // ======================================
-    // 3. BET AMOUNT MEMORY
-    // ======================================
-
-    function getSavedBetAmount() {
-        const saved = Number(
-            localStorage.getItem("wordAuctionBetAmount")
-        );
-
-        return Number.isInteger(saved) && saved > 0
-            ? saved
-            : 100;
-    }
-
-    function saveBetAmount(value) {
-        const amount = Number(value);
-
-        if (Number.isInteger(amount) && amount > 0) {
-            localStorage.setItem(
-                "wordAuctionBetAmount",
-                String(amount)
-            );
-        }
-    }
-
-    // ======================================
-    // 4. GENERAL HELPERS
-    // ======================================
+    // ==========================================
+    // 3. GENERAL HELPERS
+    // ==========================================
 
     function showNotification(message, type = "info") {
         const element = $("notification");
-        if (!element) return;
+
+        if (!element) {
+            console.log(message);
+            return;
+        }
 
         element.textContent = message;
         element.classList.remove("hidden");
@@ -118,16 +102,21 @@
         loadingText = "ĐANG XỬ LÝ..."
     ) {
         const button = $(buttonId);
+
         if (!button) return;
 
         if (loading) {
-            button.dataset.oldText = button.textContent;
+            if (!button.dataset.oldText) {
+                button.dataset.oldText = button.textContent;
+            }
+
             button.textContent = loadingText;
             button.disabled = true;
         } else {
             button.textContent =
                 button.dataset.oldText || button.textContent;
 
+            delete button.dataset.oldText;
             button.disabled = false;
         }
     }
@@ -138,7 +127,10 @@
         });
 
         const target = $(screenId);
-        if (target) target.classList.add("active");
+
+        if (target) {
+            target.classList.add("active");
+        }
 
         window.scrollTo({
             top: 0,
@@ -161,9 +153,51 @@
         return result?.data ?? null;
     }
 
-    // ======================================
-    // 5. AUTHENTICATION
-    // ======================================
+    function getRoomCode(room) {
+        return String(
+            room?.room_code ||
+            room?.code ||
+            ""
+        ).trim().toUpperCase();
+    }
+
+    function isUuid(value) {
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+            .test(String(value || ""));
+    }
+
+    function setText(id, value) {
+        const element = $(id);
+
+        if (element) {
+            element.textContent = value ?? "";
+        }
+    }
+
+    function setHtml(id, value) {
+        const element = $(id);
+
+        if (element) {
+            element.innerHTML = value;
+        }
+    }
+
+    function clearQuestionTimers() {
+        clearInterval(state.questionInterval);
+        clearTimeout(state.nextQuestionTimeout);
+
+        state.questionInterval = null;
+        state.nextQuestionTimeout = null;
+    }
+
+    function clearGameTimer() {
+        clearInterval(state.timerInterval);
+        state.timerInterval = null;
+    }
+
+    // ==========================================
+    // 4. AUTHENTICATION
+    // ==========================================
 
     async function initializeAuth() {
         try {
@@ -176,7 +210,9 @@
                 const result =
                     await supabaseClient.auth.signInAnonymously();
 
-                if (result.error) throw result.error;
+                if (result.error) {
+                    throw result.error;
+                }
 
                 data = {
                     session: result.data.session
@@ -187,12 +223,21 @@
 
             await loadProfile();
 
-            $("connectionStatus").textContent = "● Đã kết nối";
-            $("connectionStatus").style.color = "#35dfa0";
+            setText("connectionStatus", "● Đã kết nối");
+
+            if ($("connectionStatus")) {
+                $("connectionStatus").style.color = "#35dfa0";
+            }
 
         } catch (error) {
-            $("connectionStatus").textContent = "● Lỗi kết nối";
-            handleError(error, "Không thể đăng nhập Supabase");
+            setText("connectionStatus", "● Lỗi kết nối");
+
+            handleError(
+                error,
+                "Không thể đăng nhập Supabase"
+            );
+
+            throw error;
         }
     }
 
@@ -218,22 +263,24 @@
         const nickname =
             state.profile.nickname || "Người chơi";
 
-        const points = state.profile.points ?? 1000;
+        const points =
+            state.profile.points ?? 1000;
 
-        $("headerNickname").textContent = nickname;
-        $("profileNickname").textContent = nickname;
-        $("profilePoints").textContent = formatPoints(points);
+        setText("headerNickname", nickname);
+        setText("profileNickname", nickname);
+        setText("profilePoints", formatPoints(points));
 
         if (state.profile.is_admin) {
             addAdminButton();
-        } else {
-            const adminButton = $("openAdminBtn");
-            if (adminButton) adminButton.remove();
         }
     }
 
     function addAdminButton() {
         if ($("openAdminBtn")) return;
+
+        const homeScreen = $("homeScreen");
+
+        if (!homeScreen) return;
 
         const button = document.createElement("button");
 
@@ -246,142 +293,12 @@
             showScreen("adminScreen");
         });
 
-        $("homeScreen").appendChild(button);
+        homeScreen.appendChild(button);
     }
 
-    // ======================================
-    // 6. ACCOUNT SETTINGS
-    // ======================================
-
-    async function editNickname() {
-        if (!state.user || !state.profile) return;
-
-        const currentName =
-            state.profile.nickname || "";
-
-        const input = prompt(
-            "Nhập biệt danh mới (2-24 ký tự):",
-            currentName
-        );
-
-        if (input === null) return;
-
-        const nickname = input.trim();
-
-        if (nickname.length < 2 || nickname.length > 24) {
-            showNotification(
-                "Biệt danh phải có từ 2 đến 24 ký tự.",
-                "error"
-            );
-            return;
-        }
-
-        try {
-            const { data, error } = await supabaseClient
-                .from("profiles")
-                .update({ nickname })
-                .eq("user_id", state.user.id)
-                .select("*")
-                .single();
-
-            if (error) throw error;
-
-            state.profile = data;
-            renderProfile();
-
-            showNotification(
-                "Đã cập nhật biệt danh.",
-                "success"
-            );
-
-        } catch (error) {
-            handleError(error, "Không thể đổi biệt danh");
-        }
-    }
-
-    async function switchPlayer() {
-        if (state.room) {
-            showNotification(
-                "Bạn cần rời phòng trước khi đổi người chơi.",
-                "error"
-            );
-            return;
-        }
-
-        const confirmed = confirm(
-            "Đổi sang người chơi mới?\n\n" +
-            "Tài khoản hiện tại và điểm của tài khoản đó vẫn được giữ trong hệ thống.\n" +
-            "Trình duyệt này sẽ đăng nhập bằng một tài khoản ẩn danh mới."
-        );
-
-        if (!confirmed) return;
-
-        const button = $("switchPlayerBtn");
-
-        if (button) {
-            button.disabled = true;
-            button.textContent = "ĐANG ĐỔI...";
-        }
-
-        try {
-            clearInterval(state.timerInterval);
-            stopQuestionTimer();
-            unsubscribeRoom();
-
-            const { error: signOutError } =
-                await supabaseClient.auth.signOut({
-                    scope: "local"
-                });
-
-            if (signOutError) throw signOutError;
-
-            state.user = null;
-            state.profile = null;
-            state.room = null;
-            state.players = [];
-            state.question = null;
-            state.selectedAnswer = null;
-            state.hasBet = false;
-            state.isHost = false;
-            state.isSpectator = false;
-            state.questionNumber = 1;
-
-            const { data, error } =
-                await supabaseClient.auth.signInAnonymously();
-
-            if (error) throw error;
-
-            if (!data || !data.user) {
-                throw new Error(
-                    "Supabase không trả về tài khoản người chơi mới."
-                );
-            }
-
-            state.user = data.user;
-
-            await loadProfile();
-
-            showScreen("homeScreen");
-
-            showNotification(
-                "Đã chuyển sang người chơi mới.",
-                "success"
-            );
-
-        } catch (error) {
-            handleError(error, "Không thể đổi người chơi");
-
-        } finally {
-            if (button) {
-                button.disabled = false;
-                button.textContent = "ĐỔI NGƯỜI CHƠI";
-            }
-        }
-    }
-
-    // ======================================
-    // 7. PROFILE AND PLAYER DATA
-    // ======================================
+    // ==========================================
+    // 5. PROFILE AND PLAYER DATA
+    // ==========================================
 
     async function refreshProfile() {
         await loadProfile();
@@ -392,34 +309,52 @@
             item => item.user_id === state.user.id
         );
 
-        if (player) {
-            state.isSpectator = !!player.is_spectator;
+        if (!player) return;
 
-            $("gameMyPoints").textContent =
-                formatPoints(player.points);
+        state.isSpectator =
+            !!player.is_spectator ||
+            Number(player.points) <= 0;
 
-            $("availableBetPoints").textContent =
-                formatPoints(player.points);
+        setText(
+            "gameMyPoints",
+            formatPoints(player.points)
+        );
 
-            $("gamePlayerStatus").textContent =
-                state.isSpectator
-                    ? "Khán giả"
-                    : "Đang chơi";
+        setText(
+            "availableBetPoints",
+            formatPoints(player.points)
+        );
 
-            if (player.points <= 0 || player.is_spectator) {
-                disableBetting(
-                    "Bạn đã hết điểm và chuyển sang chế độ khán giả."
-                );
-            }
+        setText(
+            "gamePlayerStatus",
+            state.isSpectator ? "Khán giả" : "Đang chơi"
+        );
+
+        if (state.isSpectator) {
+            disableBetting(
+                "Bạn đã hết điểm và chuyển sang chế độ khán giả."
+            );
         }
     }
 
-    // ======================================
-    // 8. CREATE ROOM
-    // ======================================
+    // ==========================================
+    // 6. CREATE ROOM
+    // ==========================================
 
     async function createRoom() {
-        const duration = Number($("roomDuration").value);
+        const durationElement = $("roomDuration");
+
+        const duration = Number(
+            durationElement?.value || 10
+        );
+
+        if (!Number.isInteger(duration) || duration <= 0) {
+            showNotification(
+                "Thời lượng phòng không hợp lệ.",
+                "error"
+            );
+            return;
+        }
 
         setButtonLoading(
             "createRoomBtn",
@@ -428,31 +363,36 @@
         );
 
         try {
-            const { data, error } = await supabaseClient.rpc(
-                "create_auction_room",
-                {
-                    p_duration: duration
-                }
-            );
+            const { data, error } =
+                await supabaseClient.rpc(
+                    "create_auction_room",
+                    {
+                        p_duration: duration
+                    }
+                );
 
             if (error) throw error;
 
             const result = getRpcData({ data });
 
-            if (typeof result === "string") {
-                await enterRoomByIdOrCode(result);
-
-            } else if (
-                result?.id ||
-                result?.room_id ||
-                result?.code
-            ) {
-                await enterRoomByIdOrCode(
-                    result.id ||
-                    result.room_id ||
-                    result.code
+            if (!result) {
+                throw new Error(
+                    "Supabase không trả về dữ liệu phòng."
                 );
+            }
 
+            const roomId =
+                result.room_id || result.id;
+
+            const roomCode =
+                result.room_code || result.code;
+
+            if (roomId) {
+                await enterRoomByIdOrCode(roomId);
+            } else if (roomCode) {
+                await enterRoomByIdOrCode(roomCode);
+            } else if (typeof result === "string") {
+                await enterRoomByIdOrCode(result);
             } else {
                 await findMyWaitingRoom();
             }
@@ -464,7 +404,6 @@
 
         } catch (error) {
             handleError(error, "Không thể tạo phòng");
-
         } finally {
             setButtonLoading("createRoomBtn", false);
         }
@@ -476,26 +415,33 @@
             .select("*")
             .eq("host_id", state.user.id)
             .eq("status", "waiting")
-            .order("created_at", { ascending: false })
+            .order("created_at", {
+                ascending: false
+            })
             .limit(1)
             .maybeSingle();
 
         if (error) throw error;
 
         if (!data) {
-            throw new Error("Không tìm thấy phòng vừa tạo.");
+            throw new Error(
+                "Không tìm thấy phòng vừa tạo."
+            );
         }
 
         await openRoom(data);
     }
 
-    // ======================================
-    // 9. JOIN ROOM
-    // ======================================
+    // ==========================================
+    // 7. JOIN ROOM
+    // ==========================================
 
     async function joinRoom() {
-        const code =
-            $("joinRoomCode").value.trim().toUpperCase();
+        const input = $("joinRoomCode");
+
+        const code = String(
+            input?.value || ""
+        ).trim().toUpperCase();
 
         if (!code) {
             showNotification(
@@ -512,24 +458,24 @@
         );
 
         try {
-            const { data, error } = await supabaseClient.rpc(
-                "join_auction_room",
-                {
-                    p_room_code: code
-                }
-            );
+            const { data, error } =
+                await supabaseClient.rpc(
+                    "join_auction_room",
+                    {
+                        p_room_code: code
+                    }
+                );
 
             if (error) throw error;
 
             const result = getRpcData({ data });
 
-            if (result?.id || result?.room_id) {
-                await enterRoomByIdOrCode(
-                    result.id || result.room_id
-                );
-            } else {
-                await enterRoomByIdOrCode(code);
-            }
+            const roomId =
+                result?.room_id || result?.id;
+
+            await enterRoomByIdOrCode(
+                roomId || code
+            );
 
             showNotification(
                 "Tham gia phòng thành công!",
@@ -537,38 +483,62 @@
             );
 
         } catch (error) {
-            handleError(error, "Không thể tham gia phòng");
-
+            handleError(
+                error,
+                "Không thể tham gia phòng"
+            );
         } finally {
             setButtonLoading("joinRoomBtn", false);
         }
     }
 
     async function enterRoomByIdOrCode(value) {
+        const text = String(value || "").trim();
+
+        if (!text) {
+            throw new Error(
+                "Không nhận được mã hoặc ID phòng."
+            );
+        }
+
         let query = supabaseClient
             .from("auction_rooms")
             .select("*");
 
-        if (String(value).length === 36) {
-            query = query.eq("id", value);
+        if (isUuid(text)) {
+            query = query.eq("id", text);
         } else {
-            query = query.eq("code", value);
+            query = query.eq(
+                "room_code",
+                text.toUpperCase()
+            );
         }
 
         const { data, error } = await query.single();
 
         if (error) throw error;
 
+        if (!data) {
+            throw new Error("Không tìm thấy phòng.");
+        }
+
         await openRoom(data);
     }
 
-    // ======================================
-    // 10. OPEN ROOM
-    // ======================================
+    // ==========================================
+    // 8. OPEN ROOM
+    // ==========================================
 
     async function openRoom(room) {
+        if (!room) {
+            throw new Error("Dữ liệu phòng không hợp lệ.");
+        }
+
+        clearQuestionTimers();
+
         state.room = room;
-        state.isHost = room.host_id === state.user.id;
+        state.isHost =
+            room.host_id === state.user.id;
 
         await refreshPlayers();
 
@@ -584,6 +554,7 @@
 
         } else {
             showScreen("waitingScreen");
+
             renderWaitingRoom();
         }
 
@@ -597,66 +568,124 @@
             .from("auction_players")
             .select("*")
             .eq("room_id", state.room.id)
-            .order("joined_at", { ascending: true });
+            .order("joined_at", {
+                ascending: true
+            });
 
         if (error) throw error;
 
         state.players = data || [];
+
+        // Lấy nickname từ profiles để hiển thị danh sách.
+        try {
+            const userIds = state.players
+                .map(player => player.user_id)
+                .filter(Boolean);
+
+            if (userIds.length > 0) {
+                const { data: profiles } =
+                    await supabaseClient
+                        .from("profiles")
+                        .select("user_id,nickname")
+                        .in("user_id", userIds);
+
+                if (profiles) {
+                    const profileMap = new Map(
+                        profiles.map(profile => [
+                            profile.user_id,
+                            profile.nickname
+                        ])
+                    );
+
+                    state.players = state.players.map(player => ({
+                        ...player,
+                        nickname:
+                            player.nickname ||
+                            profileMap.get(player.user_id) ||
+                            null
+                    }));
+                }
+            }
+        } catch (error) {
+            console.warn(
+                "Không lấy được nickname người chơi:",
+                error
+            );
+        }
 
         renderWaitingPlayers();
         renderLeaderboard();
     }
 
     function renderWaitingRoom() {
-        $("waitingRoomCode").textContent = state.room.code;
+        setText(
+            "waitingRoomCode",
+            getRoomCode(state.room) || "CHƯA CÓ MÃ PHÒNG"
+        );
 
-        $("waitingDuration").textContent =
-            state.room.duration_minutes + " phút";
+        setText(
+            "waitingDuration",
+            (state.room.duration_minutes || 0) + " phút"
+        );
 
-        $("waitingStatus").textContent = "Đang chờ";
+        setText("waitingStatus", "Đang chờ");
 
-        $("startGameBtn").style.display =
-            state.isHost ? "inline-block" : "none";
+        const startButton = $("startGameBtn");
 
-        $("waitingHelpText").textContent = state.isHost
-            ? "Bạn là chủ phòng. Có thể bắt đầu trận đấu."
-            : "Đang chờ chủ phòng bắt đầu trận đấu.";
+        if (startButton) {
+            startButton.style.display =
+                state.isHost ? "inline-block" : "none";
+        }
+
+        setText(
+            "waitingHelpText",
+            state.isHost
+                ? "Bạn là chủ phòng. Có thể bắt đầu trận đấu."
+                : "Đang chờ chủ phòng bắt đầu trận đấu."
+        );
     }
 
     function renderWaitingPlayers() {
-        if (!$("waitingPlayerCount")) return;
+        setText(
+            "waitingPlayerCount",
+            state.players.length + " người"
+        );
 
-        $("waitingPlayerCount").textContent =
-            state.players.length + " người";
+        const list = $("waitingPlayerList");
 
-        $("waitingPlayerList").innerHTML = "";
+        if (!list) return;
+
+        list.innerHTML = "";
 
         state.players.forEach((player, index) => {
             const profileName =
-                player.nickname || player.user_id.slice(0, 8);
+                player.nickname ||
+                player.user_id?.slice(0, 8) ||
+                "Người chơi";
 
             const item = document.createElement("div");
             item.className = "player-item";
 
             const left = document.createElement("span");
+
             left.textContent =
                 (index + 1) + ". " + profileName;
 
             const right = document.createElement("strong");
+
             right.textContent =
                 player.user_id === state.room.host_id
                     ? "CHỦ PHÒNG"
                     : "NGƯỜI CHƠI";
 
             item.append(left, right);
-
-            $("waitingPlayerList").appendChild(item);
+            list.appendChild(item);
         });
     }
 
-    // ======================================
-    // 11. REALTIME SUBSCRIPTIONS
-    // ======================================
+    // ==========================================
+    // 9. REALTIME SUBSCRIPTIONS
+    // ==========================================
 
     function unsubscribeRoom() {
         state.subscriptions.forEach(channel => {
@@ -671,8 +700,10 @@
 
         if (!state.room) return;
 
+        const roomId = state.room.id;
+
         const roomChannel = supabaseClient
-            .channel("room-" + state.room.id)
+            .channel("room-" + roomId)
 
             .on(
                 "postgres_changes",
@@ -680,23 +711,33 @@
                     event: "*",
                     schema: "public",
                     table: "auction_rooms",
-                    filter: "id=eq." + state.room.id
+                    filter: "id=eq." + roomId
                 },
                 async payload => {
-                    if (!payload.new) return;
+                    try {
+                        if (!payload.new) return;
 
-                    state.room = payload.new;
+                        state.room = payload.new;
 
-                    if (payload.new.status === "active") {
-                        showScreen("gameScreen");
+                        if (payload.new.status === "active") {
+                            showScreen("gameScreen");
 
-                        await loadCurrentQuestion();
+                            await loadCurrentQuestion();
 
-                        startTimer();
-                    }
+                            startTimer();
+                        }
 
-                    if (payload.new.status === "finished") {
-                        await showFinalResults();
+                        if (payload.new.status === "finished") {
+                            clearQuestionTimers();
+
+                            await showFinalResults();
+                        }
+
+                    } catch (error) {
+                        handleError(
+                            error,
+                            "Lỗi đồng bộ thông tin phòng"
+                        );
                     }
                 }
             )
@@ -707,11 +748,18 @@
                     event: "*",
                     schema: "public",
                     table: "auction_players",
-                    filter: "room_id=eq." + state.room.id
+                    filter: "room_id=eq." + roomId
                 },
                 async () => {
-                    await refreshPlayers();
-                    await refreshProfile();
+                    try {
+                        await refreshPlayers();
+                        await refreshProfile();
+                    } catch (error) {
+                        console.error(
+                            "Lỗi cập nhật danh sách người chơi:",
+                            error
+                        );
+                    }
                 }
             )
 
@@ -721,47 +769,59 @@
                     event: "INSERT",
                     schema: "public",
                     table: "auction_questions",
-                    filter: "room_id=eq." + state.room.id
+                    filter: "room_id=eq." + roomId
                 },
                 async payload => {
-                    if (!payload.new) return;
+                    try {
+                        if (!payload.new) return;
 
-                    // Bỏ qua câu hỏi đã được tải trước đó.
-                    if (
-                        state.question?.id === payload.new.id
-                    ) return;
+                        // Tránh xử lý lại câu hỏi đang hiển thị.
+                        if (
+                            state.question?.id === payload.new.id
+                        ) {
+                            return;
+                        }
 
-                    state.question = payload.new;
+                        state.question = payload.new;
 
-                    state.questionNumber =
-                        payload.new.sequence_no ||
-                        state.questionNumber + 1;
+                        state.questionNumber =
+                            payload.new.sequence_no ||
+                            state.questionNumber + 1;
 
-                    state.selectedAnswer = null;
-                    state.hasBet = false;
-                    state.isSubmittingBet = false;
+                        state.selectedAnswer = null;
+                        state.hasBet = false;
 
-                    stopQuestionTimer();
+                        renderQuestion();
 
-                    renderQuestion();
+                        await checkMyBet();
 
-                    await checkMyBet();
+                        startQuestionTimer();
+
+                    } catch (error) {
+                        handleError(
+                            error,
+                            "Lỗi đồng bộ câu hỏi"
+                        );
+                    }
                 }
             )
 
             .subscribe(status => {
-                console.log("Realtime status:", status);
+                console.log(
+                    "Realtime status:",
+                    status
+                );
             });
 
         state.subscriptions.push(roomChannel);
     }
 
-    // ======================================
-    // 12. START GAME
-    // ======================================
+    // ==========================================
+    // 10. START GAME
+    // ==========================================
 
     async function startGame() {
-        if (!state.isHost) return;
+        if (!state.isHost || !state.room) return;
 
         setButtonLoading(
             "startGameBtn",
@@ -770,12 +830,13 @@
         );
 
         try {
-            const { error } = await supabaseClient.rpc(
-                "start_auction_room",
-                {
-                    p_room_id: state.room.id
-                }
-            );
+            const { error } =
+                await supabaseClient.rpc(
+                    "start_auction_room",
+                    {
+                        p_room_id: state.room.id
+                    }
+                );
 
             if (error) throw error;
 
@@ -787,11 +848,14 @@
                     }
                 );
 
-            if (questionError) throw questionError;
+            if (questionError) {
+                throw questionError;
+            }
 
             showScreen("gameScreen");
 
             await refreshPlayers();
+
             await loadCurrentQuestion();
 
             startTimer();
@@ -802,16 +866,18 @@
             );
 
         } catch (error) {
-            handleError(error, "Không thể bắt đầu trận đấu");
-
+            handleError(
+                error,
+                "Không thể bắt đầu trận đấu"
+            );
         } finally {
             setButtonLoading("startGameBtn", false);
         }
     }
 
-    // ======================================
-    // 13. QUESTIONS
-    // ======================================
+    // ==========================================
+    // 11. QUESTIONS
+    // ==========================================
 
     async function loadCurrentQuestion() {
         if (!state.room) return;
@@ -820,7 +886,9 @@
             .from("auction_questions")
             .select("*")
             .eq("room_id", state.room.id)
-            .order("sequence_no", { ascending: false })
+            .order("sequence_no", {
+                ascending: false
+            })
             .limit(1)
             .maybeSingle();
 
@@ -828,57 +896,71 @@
 
         if (!data) return;
 
-        // Không tải lại cùng một câu hỏi.
-        if (state.question?.id === data.id) {
-            await checkMyBet();
-            return;
-        }
+        const isNewQuestion =
+            state.question?.id !== data.id;
 
         state.question = data;
 
-        state.questionNumber = data.sequence_no || 1;
+        state.questionNumber =
+            data.sequence_no || 1;
 
-        state.selectedAnswer = null;
-        state.hasBet = false;
-        state.isSubmittingBet = false;
-
-        stopQuestionTimer();
+        if (isNewQuestion) {
+            state.selectedAnswer = null;
+            state.hasBet = false;
+        }
 
         renderQuestion();
 
         await checkMyBet();
+
+        startQuestionTimer();
     }
 
     function renderQuestion() {
-        if (!state.question) return;
+        if (!state.question || !state.room) return;
 
         const question = state.question;
 
-        $("gameRoomCode").textContent = state.room.code;
+        setText(
+            "gameRoomCode",
+            getRoomCode(state.room) || "CHƯA CÓ MÃ PHÒNG"
+        );
 
-        $("questionNumber").textContent =
+        setText(
+            "questionNumber",
             "CÂU HỎI #" +
-            (question.sequence_no || state.questionNumber);
+            (question.sequence_no || state.questionNumber)
+        );
 
-        $("questionWord").textContent =
+        setText(
+            "questionWord",
             question.tu_vung ||
             question.word ||
             question.english_word ||
-            "---";
+            "---"
+        );
 
-        $("questionPhonetic").textContent =
+        setText(
+            "questionPhonetic",
             question.phien_am ||
             question.phonetic ||
-            "";
+            ""
+        );
 
-        $("questionType").textContent =
+        setText(
+            "questionType",
             question.tu_loai ||
             question.word_type ||
-            "";
+            ""
+        );
 
         const options = question.options || [];
 
-        $("answerOptions").innerHTML = "";
+        const answerContainer = $("answerOptions");
+
+        if (!answerContainer) return;
+
+        answerContainer.innerHTML = "";
 
         options.forEach((option, index) => {
             const button = document.createElement("button");
@@ -887,20 +969,23 @@
             button.dataset.index = index;
 
             const letter = document.createElement("span");
+
             letter.className = "option-letter";
             letter.textContent =
                 String.fromCharCode(65 + index);
 
             const text = document.createElement("span");
+
             text.className = "option-text";
 
             text.textContent =
                 typeof option === "string"
                     ? option
-                    : option.nghia_tieng_viet ||
-                      option.nghiaTiengViet ||
-                      option.text ||
-                      "";
+                    : (
+                        option.nghiaTiengViet ||
+                        option.text ||
+                        ""
+                    );
 
             button.append(letter, text);
 
@@ -908,61 +993,47 @@
                 selectAnswer(index);
             });
 
-            $("answerOptions").appendChild(button);
+            answerContainer.appendChild(button);
         });
 
-        const player = state.players.find(
-            item => item.user_id === state.user.id
+        if ($("betAmount")) {
+            $("betAmount").value = "";
+        }
+
+        setText(
+            "betMessage",
+            "Hãy chọn đáp án và nhập điểm cược."
         );
-
-        const currentPoints = Number(
-            player?.points ??
-            state.profile?.points ??
-            1000
-        );
-
-        const savedBet = getSavedBetAmount();
-
-        $("betAmount").value = Math.min(
-            savedBet,
-            currentPoints
-        );
-
-        $("betMessage").textContent =
-            "Chọn số điểm cược rồi chọn đáp án. Hệ thống tự động gửi.";
 
         enableBetting();
+
         updateBetAvailability();
 
-        startQuestionTimer();
+        if (state.hasBet) {
+            disableBetting(
+                "Bạn đã đặt điểm cho câu hỏi này."
+            );
+        }
     }
 
     function selectAnswer(index) {
         if (
             state.hasBet ||
             state.isSpectator ||
-            state.isSubmittingBet
-        ) return;
+            state.isSubmitting
+        ) {
+            return;
+        }
 
         state.selectedAnswer = index;
 
-        document.querySelectorAll(".answer-option").forEach(button => {
-            button.classList.toggle(
-                "selected",
-                Number(button.dataset.index) === index
-            );
-        });
-
-        // Dừng đồng hồ ngay khi chọn đáp án.
-        stopQuestionTimer();
-
-        const countdown = $("questionCountdown");
-
-        if (countdown) {
-            countdown.textContent = "ĐANG GỬI...";
-        }
-
-        submitBet(index, false);
+        document.querySelectorAll(".answer-option")
+            .forEach(button => {
+                button.classList.toggle(
+                    "selected",
+                    Number(button.dataset.index) === index
+                );
+            });
     }
 
     async function checkMyBet() {
@@ -986,64 +1057,39 @@
         if (data) {
             state.hasBet = true;
 
-            stopQuestionTimer();
-
             disableBetting(
                 "Bạn đã đặt điểm cho câu hỏi này."
             );
-
-            const countdown = $("questionCountdown");
-
-            if (countdown) {
-                countdown.textContent = "ĐÃ TRẢ LỜI";
-                countdown.style.color = "#35dfa0";
-            }
         }
     }
 
-    // ======================================
-    // 14. QUESTION TIMER - 10 SECONDS
-    // ======================================
-
-    function stopQuestionTimer() {
-        clearInterval(state.questionTimerInterval);
-        state.questionTimerInterval = null;
-
-        clearTimeout(state.questionAdvanceTimeout);
-        state.questionAdvanceTimeout = null;
-    }
-
-    function scheduleNextQuestion() {
-        if (
-            !state.isHost ||
-            !state.room ||
-            state.room.status !== "active"
-        ) {
-            return;
-        }
-
-        if (state.questionAdvanceTimeout) return;
-
-        state.questionAdvanceTimeout = setTimeout(() => {
-            state.questionAdvanceTimeout = null;
-            nextQuestion();
-        }, 3000);
-    }
+    // ==========================================
+    // 12. QUESTION TIMER - 10 SECONDS
+    // ==========================================
 
     function startQuestionTimer() {
-        stopQuestionTimer();
+        clearQuestionTimers();
 
-        if (!state.question) return;
+        if (!state.question || !state.room) return;
 
-        if (state.hasBet || state.isSpectator) return;
+        const questionId = state.question.id;
 
         const createdAt = state.question.created_at
             ? new Date(state.question.created_at).getTime()
             : Date.now();
 
+        // Mỗi câu hỏi có thời gian trả lời 10 giây.
         state.questionDeadline = createdAt + 10000;
 
-        const updateCountdown = async () => {
+        const update = async () => {
+            if (
+                !state.question ||
+                state.question.id !== questionId
+            ) {
+                clearQuestionTimers();
+                return;
+            }
+
             const remaining = Math.max(
                 0,
                 Math.ceil(
@@ -1051,50 +1097,105 @@
                 )
             );
 
-            const countdown = $("questionCountdown");
-
-            if (countdown) {
-                countdown.textContent = remaining + "s";
-
-                countdown.style.color =
-                    remaining <= 3 ? "#ff5878" : "";
+            // Hiển thị thời gian trong phần thông báo cược.
+            if (!state.hasBet) {
+                setText(
+                    "betMessage",
+                    "Thời gian còn lại: " + remaining + " giây"
+                );
             }
 
             if (remaining <= 0) {
-                stopQuestionTimer();
+                clearInterval(state.questionInterval);
+                state.questionInterval = null;
 
+                // Hết giờ, người chưa trả lời sẽ được ghi nhận timeout.
                 if (!state.hasBet && !state.isSpectator) {
-                    await submitBet(null, true);
+                    await submitTimeout(questionId);
                 }
 
-                scheduleNextQuestion();
+                // Chỉ chủ phòng được quyền tạo câu tiếp theo.
+                if (state.isHost) {
+                    state.nextQuestionTimeout = setTimeout(
+                        async () => {
+                            if (
+                                state.question?.id === questionId &&
+                                state.room?.status === "active"
+                            ) {
+                                await nextQuestion();
+                            }
+                        },
+                        1000
+                    );
+                }
             }
         };
 
-        updateCountdown();
+        update();
 
-        if (state.questionDeadline > Date.now()) {
-            state.questionTimerInterval = setInterval(
-                updateCountdown,
-                250
+        state.questionInterval = setInterval(
+            update,
+            250
+        );
+    }
+
+    async function submitTimeout(questionId) {
+        if (
+            !state.question ||
+            state.question.id !== questionId ||
+            state.hasBet ||
+            state.isSpectator
+        ) {
+            return;
+        }
+
+        // Đánh dấu trước để tránh gửi nhiều lần.
+        state.hasBet = true;
+
+        disableBetting(
+            "Hết thời gian trả lời. Đang ghi nhận lượt chơi..."
+        );
+
+        try {
+            const { error } = await supabaseClient.rpc(
+                "place_auction_bet",
+                {
+                    p_question_id: questionId,
+                    p_answer_index: null,
+                    p_bet_points: 0
+                }
             );
-        } else {
-            // Nếu tải câu hỏi muộn và đã hết 10 giây.
-            if (!state.hasBet && !state.isSpectator) {
-                submitBet(null, true);
-            }
 
-            scheduleNextQuestion();
+            if (error) throw error;
+
+            setText(
+                "betMessage",
+                "Bạn đã hết thời gian trả lời."
+            );
+
+            await refreshPlayers();
+
+        } catch (error) {
+            console.error(
+                "Không thể ghi nhận lượt timeout:",
+                error
+            );
+
+            // Không tự gửi lặp lại vì có thể RPC đã xử lý.
+            setText(
+                "betMessage",
+                "Đã hết thời gian trả lời."
+            );
         }
     }
 
-    // ======================================
-    // 15. BETTING
-    // ======================================
+    // ==========================================
+    // 13. BETTING
+    // ==========================================
 
     function updateBetAvailability() {
         const player = state.players.find(
-            item => item.user_id === state.user.id
+            item => item.user_id === state.user?.id
         );
 
         const points = Number(
@@ -1103,22 +1204,24 @@
             1000
         );
 
-        $("availableBetPoints").textContent =
-            formatPoints(points);
+        setText(
+            "availableBetPoints",
+            formatPoints(points)
+        );
 
-        document.querySelectorAll(".bet-shortcut").forEach(button => {
-            const amount = button.dataset.bet;
-
-            if (amount === "1000") {
-                button.textContent = "Tất cả";
-            }
-        });
+        document.querySelectorAll(".bet-shortcut")
+            .forEach(button => {
+                if (button.dataset.bet === "1000") {
+                    button.textContent = "Tất cả";
+                }
+            });
     }
 
     function disableBetting(message) {
-        document.querySelectorAll(".answer-option").forEach(button => {
-            button.disabled = true;
-        });
+        document.querySelectorAll(".answer-option")
+            .forEach(button => {
+                button.disabled = true;
+            });
 
         if ($("betAmount")) {
             $("betAmount").disabled = true;
@@ -1128,9 +1231,7 @@
             $("submitBetBtn").disabled = true;
         }
 
-        if ($("betMessage")) {
-            $("betMessage").textContent = message;
-        }
+        setText("betMessage", message);
     }
 
     function enableBetting() {
@@ -1138,37 +1239,58 @@
             disableBetting(
                 state.isSpectator
                     ? "Bạn đang ở chế độ khán giả."
-                    : "Bạn đã hoàn thành lượt cược."
+                    : "Bạn đã đặt điểm cho câu hỏi này."
             );
             return;
         }
 
-        document.querySelectorAll(".answer-option").forEach(button => {
-            button.disabled = false;
-        });
+        document.querySelectorAll(".answer-option")
+            .forEach(button => {
+                button.disabled = false;
+            });
 
         if ($("betAmount")) {
             $("betAmount").disabled = false;
         }
 
         if ($("submitBetBtn")) {
-            $("submitBetBtn").disabled = true;
+            $("submitBetBtn").disabled = false;
         }
     }
 
-    async function submitBet(
-        answerIndex = state.selectedAnswer,
-        isTimeout = false
-    ) {
-        if (!state.question || !state.room) return;
+    async function submitBet() {
+        if (
+            !state.question ||
+            !state.room ||
+            state.isSubmitting
+        ) {
+            return;
+        }
 
-        if (state.hasBet || state.isSubmittingBet) return;
+        if (state.hasBet) {
+            showNotification(
+                "Bạn đã đặt điểm cho câu hỏi này.",
+                "error"
+            );
+            return;
+        }
 
-        if (state.isSpectator) return;
+        if (state.selectedAnswer === null) {
+            showNotification(
+                "Bạn cần chọn một đáp án.",
+                "error"
+            );
+            return;
+        }
 
-        const betPoints = Number($("betAmount").value);
+        const betPoints = Number(
+            $("betAmount")?.value
+        );
 
-        if (!Number.isInteger(betPoints) || betPoints <= 0) {
+        if (
+            !Number.isInteger(betPoints) ||
+            betPoints <= 0
+        ) {
             showNotification(
                 "Điểm cược phải là số nguyên lớn hơn 0.",
                 "error"
@@ -1195,83 +1317,46 @@
         }
 
         if (
-            answerIndex !== null &&
-            (
-                !Number.isInteger(answerIndex) ||
-                answerIndex < 0 ||
-                answerIndex > 5
-            )
+            state.questionDeadline &&
+            Date.now() >= state.questionDeadline
         ) {
             showNotification(
-                "Đáp án không hợp lệ.",
+                "Đã hết thời gian trả lời.",
                 "error"
             );
             return;
         }
 
-        state.isSubmittingBet = true;
+        state.isSubmitting = true;
 
-        stopQuestionTimer();
-
-        saveBetAmount(betPoints);
-
-        document.querySelectorAll(".answer-option").forEach(button => {
-            button.disabled = true;
-        });
-
-        $("betAmount").disabled = true;
-
-        if ($("submitBetBtn")) {
-            $("submitBetBtn").disabled = true;
-        }
-
-        $("betMessage").textContent = isTimeout
-            ? "Đã hết thời gian. Đang tự động xử lý điểm cược..."
-            : "Đang gửi đáp án và điểm cược...";
+        setButtonLoading(
+            "submitBetBtn",
+            true,
+            "ĐANG GỬI..."
+        );
 
         try {
-            const { data, error } = await supabaseClient.rpc(
-                "place_auction_bet",
-                {
-                    p_question_id: state.question.id,
-                    p_answer_index: answerIndex,
-                    p_bet_points: betPoints
-                }
-            );
+            const { data, error } =
+                await supabaseClient.rpc(
+                    "place_auction_bet",
+                    {
+                        p_question_id: state.question.id,
+                        p_answer_index: state.selectedAnswer,
+                        p_bet_points: betPoints
+                    }
+                );
 
             if (error) throw error;
 
             state.hasBet = true;
 
-            // Chủ phòng trả lời sớm cũng tự chuyển câu.
-            if (state.isHost) {
-                scheduleNextQuestion();
-            }
-
-            const countdown = $("questionCountdown");
-
-            if (countdown) {
-                countdown.textContent = "ĐÃ TRẢ LỜI";
-                countdown.style.color = "#35dfa0";
-            }
-
             disableBetting(
-                answerIndex === null
-                    ? "Bạn không trả lời kịp. Điểm cược đã được xử lý."
-                    : "Đã gửi đáp án và điểm cược."
+                "Đã gửi đáp án và điểm cược. Chờ kết quả."
             );
 
             const result = getRpcData({ data });
 
-            if (answerIndex === null) {
-                showNotification(
-                    "Hết giờ! Bạn bị trừ " +
-                    formatPoints(betPoints) +
-                    " điểm.",
-                    "error"
-                );
-
-            } else if (result?.is_correct === true) {
+            if (result?.is_correct === true) {
                 showNotification(
                     "Chính xác! Bạn được cộng điểm.",
                     "success"
@@ -1285,171 +1370,205 @@
 
             } else {
                 showNotification(
-                    "Đã gửi đáp án thành công.",
+                    "Đã đặt điểm thành công!",
                     "success"
                 );
             }
 
             await refreshPlayers();
+
             await refreshProfile();
 
         } catch (error) {
-            handleError(error, "Không thể gửi điểm cược");
-
-            if (
-                state.questionDeadline &&
-                Date.now() < state.questionDeadline
-            ) {
-                enableBetting();
-                startQuestionTimer();
-            }
+            handleError(
+                error,
+                "Không thể đặt điểm"
+            );
 
         } finally {
-            state.isSubmittingBet = false;
+            state.isSubmitting = false;
+
+            if (!state.hasBet) {
+                setButtonLoading(
+                    "submitBetBtn",
+                    false
+                );
+            }
         }
     }
 
-    $("betAmount").addEventListener("change", () => {
-        saveBetAmount($("betAmount").value);
-    });
+    // ==========================================
+    // 14. BET SHORTCUT BUTTONS
+    // ==========================================
 
-    // ======================================
-    // 16. BET SHORTCUT BUTTONS
-    // ======================================
+    document.querySelectorAll(".bet-shortcut")
+        .forEach(button => {
+            button.addEventListener("click", () => {
+                if (
+                    state.hasBet ||
+                    state.isSpectator ||
+                    !state.user
+                ) {
+                    return;
+                }
 
-    document.querySelectorAll(".bet-shortcut").forEach(button => {
-        button.addEventListener("click", () => {
-            const player = state.players.find(
-                item => item.user_id === state.user.id
-            );
+                const player = state.players.find(
+                    item => item.user_id === state.user.id
+                );
 
-            const points = Number(
-                player?.points ??
-                state.profile?.points ??
-                1000
-            );
+                const points = Number(
+                    player?.points ??
+                    state.profile?.points ??
+                    1000
+                );
 
-            const value = button.dataset.bet;
+                const value = button.dataset.bet;
 
-            const selectedAmount =
-                value === "1000"
-                    ? points
-                    : Math.min(Number(value), points);
+                if (!$("betAmount")) return;
 
-            $("betAmount").value = selectedAmount;
-
-            saveBetAmount(selectedAmount);
+                $("betAmount").value =
+                    value === "1000"
+                        ? points
+                        : Math.min(Number(value), points);
+            });
         });
-    });
 
-    // ======================================
-    // 17. NEXT QUESTION
-    // ======================================
+    // ==========================================
+    // 15. NEXT QUESTION
+    // ==========================================
 
     async function nextQuestion() {
-        if (!state.isHost || state.isAdvancingQuestion) return;
+        if (!state.isHost) {
+            return;
+        }
 
-        if (!state.room || state.room.status !== "active") return;
+        if (
+            !state.room ||
+            state.room.status !== "active" ||
+            state.isCreatingQuestion
+        ) {
+            return;
+        }
 
-        state.isAdvancingQuestion = true;
+        state.isCreatingQuestion = true;
+
+        clearQuestionTimers();
+
+        setButtonLoading(
+            "nextQuestionBtn",
+            true,
+            "ĐANG TẠO CÂU..."
+        );
 
         try {
-            const { data, error } = await supabaseClient.rpc(
-                "create_auction_question",
-                {
-                    p_room_id: state.room.id
-                }
-            );
+            const { error } =
+                await supabaseClient.rpc(
+                    "create_auction_question",
+                    {
+                        p_room_id: state.room.id
+                    }
+                );
 
             if (error) throw error;
 
-            if (data?.error) {
-                throw new Error(data.error);
-            }
-
-            // Realtime INSERT sẽ cập nhật câu hỏi cho tất cả người chơi.
-            // Tải lại để phòng trường hợp Realtime chưa nhận sự kiện.
             await loadCurrentQuestion();
 
-            console.log(
-                "Đã tạo câu hỏi tiếp theo:",
-                data
+            showNotification(
+                "Đã tạo câu hỏi mới.",
+                "success"
             );
 
         } catch (error) {
-            console.error(
-                "Lỗi chuyển câu hỏi:",
-                error
-            );
-
-            showNotification(
-                "Không thể chuyển câu hỏi: " + error.message,
-                "error"
+            handleError(
+                error,
+                "Không thể tạo câu hỏi mới"
             );
 
         } finally {
-            state.isAdvancingQuestion = false;
+            state.isCreatingQuestion = false;
+
+            setButtonLoading(
+                "nextQuestionBtn",
+                false
+            );
         }
     }
 
-    // ======================================
-    // 18. LEADERBOARD
-    // ======================================
+    // ==========================================
+    // 16. LEADERBOARD
+    // ==========================================
 
     function renderLeaderboard() {
         const sorted = [...state.players].sort(
-            (a, b) => Number(b.points) - Number(a.points)
+            (a, b) =>
+                Number(b.points) - Number(a.points)
         );
 
-        $("gamePlayerCount").textContent = sorted.length;
+        setText(
+            "gamePlayerCount",
+            sorted.length
+        );
 
-        $("gameLeaderboard").innerHTML = "";
+        const leaderboard = $("gameLeaderboard");
 
-        sorted.forEach((player, index) => {
-            const item = document.createElement("div");
-            item.className = "leaderboard-item";
+        if (leaderboard) {
+            leaderboard.innerHTML = "";
 
-            const left = document.createElement("span");
+            sorted.forEach((player, index) => {
+                const item = document.createElement("div");
 
-            const rank = document.createElement("span");
-            rank.className = "rank";
-            rank.textContent = index + 1;
+                item.className = "leaderboard-item";
 
-            const name = document.createElement("span");
-            name.textContent =
-                player.nickname ||
-                player.user_id.slice(0, 8);
+                const left = document.createElement("span");
 
-            left.append(rank, name);
+                const rank = document.createElement("span");
 
-            const score = document.createElement("strong");
-            score.textContent =
-                formatPoints(player.points) + " điểm";
+                rank.className = "rank";
+                rank.textContent = index + 1;
 
-            item.append(left, score);
+                const name = document.createElement("span");
 
-            $("gameLeaderboard").appendChild(item);
-        });
+                name.textContent =
+                    player.nickname ||
+                    player.user_id?.slice(0, 8) ||
+                    "Người chơi";
+
+                left.append(rank, name);
+
+                const score = document.createElement("strong");
+
+                score.textContent =
+                    formatPoints(player.points) + " điểm";
+
+                item.append(left, score);
+
+                leaderboard.appendChild(item);
+            });
+        }
 
         const me = state.players.find(
-            player => player.user_id === state.user.id
+            player => player.user_id === state.user?.id
         );
 
         if (me) {
-            $("gameMyPoints").textContent =
-                formatPoints(me.points);
+            setText(
+                "gameMyPoints",
+                formatPoints(me.points)
+            );
 
-            $("availableBetPoints").textContent =
-                formatPoints(me.points);
+            setText(
+                "availableBetPoints",
+                formatPoints(me.points)
+            );
         }
     }
 
-    // ======================================
-    // 19. MATCH TIMER
-    // ======================================
+    // ==========================================
+    // 17. GAME TIMER
+    // ==========================================
 
     function startTimer() {
-        clearInterval(state.timerInterval);
+        clearGameTimer();
 
         if (!state.room?.ends_at) return;
 
@@ -1467,13 +1586,15 @@
             const minutes = Math.floor(remaining / 60);
             const seconds = remaining % 60;
 
-            $("gameTimer").textContent =
+            setText(
+                "gameTimer",
                 String(minutes).padStart(2, "0") +
                 ":" +
-                String(seconds).padStart(2, "0");
+                String(seconds).padStart(2, "0")
+            );
 
             if (remaining <= 0) {
-                clearInterval(state.timerInterval);
+                clearGameTimer();
 
                 if (state.isHost) {
                     finishGame();
@@ -1483,25 +1604,38 @@
 
         update();
 
-        state.timerInterval = setInterval(update, 1000);
+        state.timerInterval = setInterval(
+            update,
+            1000
+        );
     }
 
-    // ======================================
-    // 20. FINISH GAME
-    // ======================================
+    // ==========================================
+    // 18. FINISH GAME
+    // ==========================================
 
     async function finishGame() {
-        if (!state.isHost || !state.room) return;
+        if (
+            !state.isHost ||
+            !state.room ||
+            state.isFinishing
+        ) {
+            return;
+        }
+
+        state.isFinishing = true;
+
+        clearQuestionTimers();
+        clearGameTimer();
 
         try {
-            stopQuestionTimer();
-
-            const { error } = await supabaseClient.rpc(
-                "finish_auction_room",
-                {
-                    p_room_id: state.room.id
-                }
-            );
+            const { error } =
+                await supabaseClient.rpc(
+                    "finish_auction_room",
+                    {
+                        p_room_id: state.room.id
+                    }
+                );
 
             if (error) throw error;
 
@@ -1512,51 +1646,61 @@
                 error,
                 "Không thể kết thúc trận đấu"
             );
+
+        } finally {
+            state.isFinishing = false;
         }
     }
 
     async function showFinalResults() {
-        clearInterval(state.timerInterval);
-        stopQuestionTimer();
+        clearGameTimer();
+        clearQuestionTimers();
 
         await refreshPlayers();
 
         const sorted = [...state.players].sort(
-            (a, b) => Number(b.points) - Number(a.points)
+            (a, b) =>
+                Number(b.points) - Number(a.points)
         );
 
-        $("finalLeaderboard").innerHTML = "";
+        const leaderboard = $("finalLeaderboard");
 
-        sorted.forEach((player, index) => {
-            const item = document.createElement("div");
-            item.className = "leaderboard-item";
+        if (leaderboard) {
+            leaderboard.innerHTML = "";
 
-            const left = document.createElement("span");
+            sorted.forEach((player, index) => {
+                const item = document.createElement("div");
 
-            left.textContent =
-                (index + 1) +
-                ". " +
-                (
-                    player.nickname ||
-                    player.user_id.slice(0, 8)
-                );
+                item.className = "leaderboard-item";
 
-            const score = document.createElement("strong");
+                const left = document.createElement("span");
 
-            score.textContent =
-                formatPoints(player.points) + " điểm";
+                left.textContent =
+                    (index + 1) +
+                    ". " +
+                    (
+                        player.nickname ||
+                        player.user_id?.slice(0, 8) ||
+                        "Người chơi"
+                    );
 
-            item.append(left, score);
+                const score = document.createElement("strong");
 
-            $("finalLeaderboard").appendChild(item);
-        });
+                score.textContent =
+                    formatPoints(player.points) + " điểm";
+
+                item.append(left, score);
+
+                leaderboard.appendChild(item);
+            });
+        }
 
         showScreen("resultScreen");
     }
 
-    // ======================================
-    // 21. LEAVE ROOM
-    // ======================================
+    // ==========================================
+    // 19. LEAVE ROOM
+    // ==========================================
 
     async function leaveRoom() {
         if (!state.room) {
@@ -1565,26 +1709,32 @@
         }
 
         try {
-            const { error } = await supabaseClient.rpc(
-                "leave_auction_room",
-                {
-                    p_room_id: state.room.id
-                }
-            );
+            const { error } =
+                await supabaseClient.rpc(
+                    "leave_auction_room",
+                    {
+                        p_room_id: state.room.id
+                    }
+                );
 
             if (error) throw error;
 
-            clearInterval(state.timerInterval);
-            stopQuestionTimer();
+            clearGameTimer();
+            clearQuestionTimers();
 
             unsubscribeRoom();
 
             state.room = null;
             state.players = [];
             state.question = null;
+
+            state.selectedAnswer = null;
             state.hasBet = false;
+
             state.isSpectator = false;
             state.isHost = false;
+
+            state.questionNumber = 1;
 
             await refreshProfile();
 
@@ -1596,13 +1746,16 @@
             );
 
         } catch (error) {
-            handleError(error, "Không thể rời phòng");
+            handleError(
+                error,
+                "Không thể rời phòng"
+            );
         }
     }
 
-    // ======================================
-    // 22. ADMIN - IMPORT VOCABULARY
-    // ======================================
+    // ==========================================
+    // 20. ADMIN - IMPORT VOCABULARY
+    // ==========================================
 
     async function importVocabulary() {
         if (!state.profile?.is_admin) {
@@ -1617,7 +1770,7 @@
 
         try {
             vocabulary = JSON.parse(
-                $("vocabularyJson").value
+                $("vocabularyJson")?.value || ""
             );
 
         } catch (error) {
@@ -1646,24 +1799,30 @@
         );
 
         try {
-            const { data, error } = await supabaseClient.rpc(
-                "import_vocabulary",
-                {
-                    p_data: vocabulary
-                }
-            );
+            const { data, error } =
+                await supabaseClient.rpc(
+                    "import_vocabulary",
+                    {
+                        p_data: vocabulary
+                    }
+                );
 
             if (error) throw error;
 
-            $("importMessage").textContent =
-                "Đã gửi dữ liệu nhập từ vựng thành công.";
+            setText(
+                "importMessage",
+                "Đã gửi dữ liệu nhập từ vựng thành công."
+            );
 
             showNotification(
                 "Nhập từ vựng thành công!",
                 "success"
             );
 
-            console.log("Import result:", data);
+            console.log(
+                "Import result:",
+                data
+            );
 
         } catch (error) {
             handleError(
@@ -1671,8 +1830,10 @@
                 "Không thể nhập từ vựng"
             );
 
-            $("importMessage").textContent =
-                error.message;
+            setText(
+                "importMessage",
+                error.message
+            );
 
         } finally {
             setButtonLoading(
@@ -1690,7 +1851,9 @@
 
             JSON.parse(text);
 
-            $("vocabularyJson").value = text;
+            if ($("vocabularyJson")) {
+                $("vocabularyJson").value = text;
+            }
 
             showNotification(
                 "Đã đọc file JSON.",
@@ -1705,83 +1868,100 @@
         }
     }
 
-    // ======================================
-    // 23. EVENT LISTENERS
-    // ======================================
+    // ==========================================
+    // 21. EVENT LISTENERS
+    // ==========================================
 
-    $("editNicknameBtn").addEventListener(
-        "click",
-        editNickname
-    );
+    function on(id, eventName, callback) {
+        const element = $(id);
 
-    $("switchPlayerBtn").addEventListener(
-        "click",
-        switchPlayer
-    );
+        if (element) {
+            element.addEventListener(
+                eventName,
+                callback
+            );
+        } else {
+            console.warn(
+                "Không tìm thấy phần tử HTML:",
+                id
+            );
+        }
+    }
 
-    $("createRoomBtn").addEventListener(
-        "click",
-        createRoom
-    );
+    on("createRoomBtn", "click", createRoom);
 
-    $("joinRoomBtn").addEventListener(
-        "click",
-        joinRoom
-    );
+    on("joinRoomBtn", "click", joinRoom);
 
-    $("startGameBtn").addEventListener(
-        "click",
-        startGame
-    );
+    on("startGameBtn", "click", startGame);
 
-    $("leaveWaitingBtn").addEventListener(
-        "click",
-        leaveRoom
-    );
+    on("leaveWaitingBtn", "click", leaveRoom);
 
-    $("leaveGameBtn").addEventListener(
-        "click",
-        leaveRoom
-    );
+    on("submitBetBtn", "click", submitBet);
 
-    $("backHomeBtn").addEventListener("click", () => {
-        clearInterval(state.timerInterval);
-        stopQuestionTimer();
+    on("nextQuestionBtn", "click", nextQuestion);
+
+    on("leaveGameBtn", "click", leaveRoom);
+
+    on("backHomeBtn", "click", async () => {
+        clearGameTimer();
+        clearQuestionTimers();
 
         state.room = null;
+        state.players = [];
         state.question = null;
+
+        state.hasBet = false;
+        state.isHost = false;
+        state.isSpectator = false;
 
         unsubscribeRoom();
 
         showScreen("homeScreen");
 
-        refreshProfile();
+        try {
+            await refreshProfile();
+        } catch (error) {
+            handleError(
+                error,
+                "Không thể tải lại thông tin người chơi"
+            );
+        }
     });
 
-    $("adminBackBtn").addEventListener("click", () => {
+    on("adminBackBtn", "click", () => {
         showScreen("homeScreen");
     });
 
-    $("importVocabularyBtn").addEventListener(
+    on(
+        "importVocabularyBtn",
         "click",
         importVocabulary
     );
 
-    $("vocabularyFile").addEventListener(
-        "change",
-        event => {
-            loadVocabularyFile(event.target.files[0]);
-        }
-    );
+    on("vocabularyFile", "change", event => {
+        loadVocabularyFile(
+            event.target.files?.[0]
+        );
+    });
 
-    // ======================================
-    // 24. INITIALIZE APPLICATION
-    // ======================================
+    // ==========================================
+    // 22. INITIALIZE APPLICATION
+    // ==========================================
 
     async function initializeApp() {
-        await initializeAuth();
+        try {
+            await initializeAuth();
 
-        console.log("Word Auction initialized.");
+            console.log(
+                "Word Auction initialized successfully."
+            );
+
+        } catch (error) {
+            console.error(
+                "Word Auction initialization failed:",
+                error
+            );
+        }
     }
 
     initializeApp();
