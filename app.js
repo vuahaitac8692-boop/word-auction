@@ -1924,76 +1924,91 @@
     // 25. ADMIN - IMPORT VOCABULARY
     // ==========================================
 
-   async function importVocabulary() {
-    if (!state.profile?.is_admin) {
-        showNotification("Bạn không có quyền quản trị.", "error");
-        return;
-    }
-
-    try {
-        const vocabulary = JSON.parse(
-            $("vocabularyJson")?.value || ""
-        );
-
-        if (!Array.isArray(vocabulary) || vocabulary.length === 0) {
-            throw new Error("Dữ liệu phải là một mảng JSON có từ vựng.");
+    async function importVocabulary() {
+        if (!state.profile?.is_admin) {
+            showNotification(
+                "Bạn không có quyền quản trị.",
+                "error"
+            );
+            return;
         }
 
-        const normalizedVocabulary = vocabulary.map((item, index) => {
-            if (!item || typeof item !== "object" || Array.isArray(item)) {
-                throw new Error(`Dòng ${index + 1} không hợp lệ.`);
-            }
+        let vocabulary;
 
-            return {
-                tuVung: String(item.tuVung ?? item.tu_vung ?? "").trim(),
-                tuLoai: String(item.tuLoai ?? item.tu_loai ?? "").trim(),
-                phienAm: String(item.phienAm ?? item.phien_am ?? "").trim(),
-                nghiaTiengViet: String(
-                    item.nghiaTiengViet ??
-                    item.nghia_tieng_viet ??
-                    item.nghia ??
-                    ""
-                ).trim()
-            };
-        });
+        try {
+            vocabulary = JSON.parse(
+                $("vocabularyJson")?.value || ""
+            );
 
-        const invalidIndex = normalizedVocabulary.findIndex(
-            item => !item.tuVung || !item.nghiaTiengViet
+        } catch (error) {
+            showNotification(
+                "Dữ liệu JSON không hợp lệ.",
+                "error"
+            );
+            return;
+        }
+
+        if (
+            !Array.isArray(vocabulary) ||
+            vocabulary.length === 0
+        ) {
+            showNotification(
+                "Dữ liệu phải là một mảng JSON có từ vựng.",
+                "error"
+            );
+            return;
+        }
+
+        setButtonLoading(
+            "importVocabularyBtn",
+            true,
+            "ĐANG NHẬP..."
         );
 
-        if (invalidIndex !== -1) {
-            throw new Error(
-                `Dòng ${invalidIndex + 1} thiếu từ vựng hoặc nghĩa tiếng Việt.`
+        try {
+            const { data, error } =
+                await supabaseClient.rpc(
+                    "import_vocabulary",
+                    {
+                        p_data: vocabulary
+                    }
+                );
+
+            if (error) throw error;
+
+            setText(
+                "importMessage",
+                "Đã gửi dữ liệu nhập từ vựng thành công."
+            );
+
+            showNotification(
+                "Nhập từ vựng thành công!",
+                "success"
+            );
+
+            console.log(
+                "Import result:",
+                data
+            );
+
+        } catch (error) {
+            handleError(
+                error,
+                "Không thể nhập từ vựng"
+            );
+
+            setText(
+                "importMessage",
+                error.message
+            );
+
+        } finally {
+            setButtonLoading(
+                "importVocabularyBtn",
+                false
             );
         }
-
-        setButtonLoading("importVocabularyBtn", true, "ĐANG NHẬP...");
-
-        const { data, error } = await supabaseClient.rpc(
-            "import_vocabulary",
-            { p_data: normalizedVocabulary }
-        );
-
-        if (error) throw error;
-
-        const processed = Number(data?.processed ?? 0);
-
-        setText("importMessage", `Đã xử lý ${processed} từ vựng.`);
-        showNotification(
-            `Nhập thành công ${processed} từ vựng!`,
-            "success"
-        );
-
-        console.log("Import result:", data);
-
-    } catch (error) {
-        handleError(error, "Không thể nhập từ vựng");
-        setText("importMessage", error.message);
-
-    } finally {
-        setButtonLoading("importVocabularyBtn", false);
     }
-}
 
     async function loadVocabularyFile(file) {
         if (!file) return;
