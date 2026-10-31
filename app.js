@@ -917,104 +917,113 @@
     }
 
     function renderQuestion() {
-        if (!state.question || !state.room) return;
+    if (!state.question) return;
 
-        const question = state.question;
+    const question = state.question;
 
-        setText(
-            "gameRoomCode",
-            getRoomCode(state.room) || "CHƯA CÓ MÃ PHÒNG"
-        );
+    // Mã phòng
+    $("gameRoomCode").textContent =
+        state.room?.room_code || state.room?.code || "";
 
-        setText(
-            "questionNumber",
-            "CÂU HỎI #" +
-            (question.sequence_no || state.questionNumber)
-        );
+    // Số thứ tự câu hỏi
+    $("questionNumber").textContent =
+        "CÂU HỎI #" + (question.sequence_no || state.questionNumber);
 
-        setText(
-            "questionWord",
-            question.tu_vung ||
-            question.word ||
-            question.english_word ||
-            "---"
-        );
+    // Từ vựng tiếng Anh
+    $("questionWord").textContent =
+        question.tu_vung ||
+        question.word ||
+        question.english_word ||
+        "---";
 
-        setText(
-            "questionPhonetic",
-            question.phien_am ||
-            question.phonetic ||
-            ""
-        );
+    // Phiên âm
+    $("questionPhonetic").textContent =
+        question.phien_am ||
+        question.phonetic ||
+        "";
 
-        setText(
-            "questionType",
-            question.tu_loai ||
-            question.word_type ||
-            ""
-        );
+    // Từ loại
+    $("questionType").textContent =
+        question.tu_loai ||
+        question.word_type ||
+        "";
 
-        const options = question.options || [];
+    // Đọc danh sách đáp án
+    let options = question.options || [];
 
-        const answerContainer = $("answerOptions");
-
-        if (!answerContainer) return;
-
-        answerContainer.innerHTML = "";
-
-        options.forEach((option, index) => {
-            const button = document.createElement("button");
-
-            button.className = "answer-option";
-            button.dataset.index = index;
-
-            const letter = document.createElement("span");
-
-            letter.className = "option-letter";
-            letter.textContent =
-                String.fromCharCode(65 + index);
-
-            const text = document.createElement("span");
-
-            text.className = "option-text";
-
-            text.textContent =
-                typeof option === "string"
-                    ? option
-                    : (
-                        option.nghiaTiengViet ||
-                        option.text ||
-                        ""
-                    );
-
-            button.append(letter, text);
-
-            button.addEventListener("click", () => {
-                selectAnswer(index);
-            });
-
-            answerContainer.appendChild(button);
-        });
-
-        if ($("betAmount")) {
-            $("betAmount").value = "";
-        }
-
-        setText(
-            "betMessage",
-            "Hãy chọn đáp án và nhập điểm cược."
-        );
-
-        enableBetting();
-
-        updateBetAvailability();
-
-        if (state.hasBet) {
-            disableBetting(
-                "Bạn đã đặt điểm cho câu hỏi này."
-            );
+    // Trường hợp options được lưu dưới dạng JSON string
+    if (typeof options === "string") {
+        try {
+            options = JSON.parse(options);
+        } catch (error) {
+            console.error("Lỗi đọc dữ liệu đáp án:", error);
+            options = [];
         }
     }
+
+    const answerContainer = $("answerOptions");
+    answerContainer.innerHTML = "";
+
+    if (!Array.isArray(options) || options.length === 0) {
+        answerContainer.textContent = "Không có dữ liệu đáp án.";
+        console.error("Dữ liệu options không hợp lệ:", question.options);
+        return;
+    }
+
+    // Hiển thị các đáp án
+    options.forEach((option, index) => {
+        const button = document.createElement("button");
+        button.className = "answer-option";
+        button.dataset.index = index;
+
+        // Chữ cái A, B, C, D...
+        const letter = document.createElement("span");
+        letter.className = "option-letter";
+        letter.textContent = String.fromCharCode(65 + index);
+
+        // Nghĩa tiếng Việt
+        const text = document.createElement("span");
+        text.className = "option-text";
+
+        let meaning = "";
+
+        if (typeof option === "string") {
+            meaning = option;
+        } else if (option && typeof option === "object") {
+            meaning =
+                option.nghia_tieng_viet ||
+                option.nghiaTiengViet ||
+                option.nghia ||
+                option.meaning ||
+                option.text ||
+                option.label ||
+                option.value ||
+                "";
+        }
+
+        text.textContent = meaning || "Chưa có nghĩa tiếng Việt";
+
+        button.append(letter, text);
+
+        // Chọn đáp án
+        button.addEventListener("click", () => {
+            selectAnswer(index);
+        });
+
+        answerContainer.appendChild(button);
+    });
+
+    // Reset ô nhập điểm cược
+    $("betAmount").value = "";
+
+    // Thông báo
+    $("betMessage").textContent =
+        "Hãy chọn đáp án và nhập điểm cược.";
+
+    // Giữ nguyên chức năng đặt cược
+    enableBetting();
+    updateBetAvailability();
+}
 
     function selectAnswer(index) {
         if (
