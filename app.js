@@ -1924,91 +1924,76 @@
     // 25. ADMIN - IMPORT VOCABULARY
     // ==========================================
 
-    async function importVocabulary() {
-        if (!state.profile?.is_admin) {
-            showNotification(
-                "Bạn không có quyền quản trị.",
-                "error"
-            );
-            return;
-        }
+   async function importVocabulary() {
+    if (!state.profile?.is_admin) {
+        showNotification("Bạn không có quyền quản trị.", "error");
+        return;
+    }
 
-        let vocabulary;
-
-        try {
-            vocabulary = JSON.parse(
-                $("vocabularyJson")?.value || ""
-            );
-
-        } catch (error) {
-            showNotification(
-                "Dữ liệu JSON không hợp lệ.",
-                "error"
-            );
-            return;
-        }
-
-        if (
-            !Array.isArray(vocabulary) ||
-            vocabulary.length === 0
-        ) {
-            showNotification(
-                "Dữ liệu phải là một mảng JSON có từ vựng.",
-                "error"
-            );
-            return;
-        }
-
-        setButtonLoading(
-            "importVocabularyBtn",
-            true,
-            "ĐANG NHẬP..."
+    try {
+        const vocabulary = JSON.parse(
+            $("vocabularyJson")?.value || ""
         );
 
-        try {
-            const { data, error } =
-                await supabaseClient.rpc(
-                    "import_vocabulary",
-                    {
-                        p_data: vocabulary
-                    }
-                );
+        if (!Array.isArray(vocabulary) || vocabulary.length === 0) {
+            throw new Error("Dữ liệu phải là một mảng JSON có từ vựng.");
+        }
 
-            if (error) throw error;
+        const normalizedVocabulary = vocabulary.map((item, index) => {
+            if (!item || typeof item !== "object" || Array.isArray(item)) {
+                throw new Error(`Dòng ${index + 1} không hợp lệ.`);
+            }
 
-            setText(
-                "importMessage",
-                "Đã gửi dữ liệu nhập từ vựng thành công."
-            );
+            return {
+                tuVung: String(item.tuVung ?? item.tu_vung ?? "").trim(),
+                tuLoai: String(item.tuLoai ?? item.tu_loai ?? "").trim(),
+                phienAm: String(item.phienAm ?? item.phien_am ?? "").trim(),
+                nghiaTiengViet: String(
+                    item.nghiaTiengViet ??
+                    item.nghia_tieng_viet ??
+                    item.nghia ??
+                    ""
+                ).trim()
+            };
+        });
 
-            showNotification(
-                "Nhập từ vựng thành công!",
-                "success"
-            );
+        const invalidIndex = normalizedVocabulary.findIndex(
+            item => !item.tuVung || !item.nghiaTiengViet
+        );
 
-            console.log(
-                "Import result:",
-                data
-            );
-
-        } catch (error) {
-            handleError(
-                error,
-                "Không thể nhập từ vựng"
-            );
-
-            setText(
-                "importMessage",
-                error.message
-            );
-
-        } finally {
-            setButtonLoading(
-                "importVocabularyBtn",
-                false
+        if (invalidIndex !== -1) {
+            throw new Error(
+                `Dòng ${invalidIndex + 1} thiếu từ vựng hoặc nghĩa tiếng Việt.`
             );
         }
+
+        setButtonLoading("importVocabularyBtn", true, "ĐANG NHẬP...");
+
+        const { data, error } = await supabaseClient.rpc(
+            "import_vocabulary",
+            { p_data: normalizedVocabulary }
+        );
+
+        if (error) throw error;
+
+        const processed = Number(data?.processed ?? 0);
+
+        setText("importMessage", `Đã xử lý ${processed} từ vựng.`);
+        showNotification(
+            `Nhập thành công ${processed} từ vựng!`,
+            "success"
+        );
+
+        console.log("Import result:", data);
+
+    } catch (error) {
+        handleError(error, "Không thể nhập từ vựng");
+        setText("importMessage", error.message);
+
+    } finally {
+        setButtonLoading("importVocabularyBtn", false);
     }
+}
 
     async function loadVocabularyFile(file) {
         if (!file) return;
@@ -2056,6 +2041,9 @@
     }
 
     on("createRoomBtn", "click", createRoom);
+on("editNicknameBtn", "click", changeNickname);
+
+on("switchPlayerBtn", "click", switchPlayer);
 
     on("joinRoomBtn", "click", joinRoom);
 
@@ -2115,6 +2103,123 @@
         );
     });
 
+	// ==========================================
+// CHANGE NICKNAME
+// ==========================================
+
+async function changeNickname() {
+    if (!state.user || !state.profile) {
+        showNotification("Chưa tải được thông tin người chơi.", "error");
+        return;
+    }
+
+    const currentNickname = state.profile.nickname || "Người chơi";
+
+    const newNickname = prompt(
+        "Nhập biệt danh mới:",
+        currentNickname
+    );
+
+    if (newNickname === null) return;
+
+    const nickname = newNickname.trim();
+
+    if (!nickname) {
+        showNotification("Biệt danh không được để trống.", "error");
+        return;
+    }
+
+    if (nickname.length > 30) {
+        showNotification("Biệt danh tối đa 30 ký tự.", "error");
+        return;
+    }
+
+    try {
+        const { data, error } = await supabaseClient
+            .from("profiles")
+            .update({
+                nickname: nickname,
+                updated_at: new Date().toISOString()
+            })
+            .eq("user_id", state.user.id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        state.profile = data;
+
+        renderProfile();
+
+        await refreshPlayers();
+
+        showNotification("Đã đổi biệt danh thành công!", "success");
+
+    } catch (error) {
+        handleError(error, "Không thể đổi biệt danh");
+    }
+}
+
+// ==========================================
+// SWITCH PLAYER
+// ==========================================
+
+async function switchPlayer() {
+    if (state.room) {
+        showNotification(
+            "Bạn cần rời phòng trước khi đổi người chơi.",
+            "error"
+        );
+        return;
+    }
+
+    const confirmed = confirm(
+        "Đổi người chơi sẽ đăng xuất tài khoản hiện tại và tạo người chơi mới. Tiếp tục?"
+    );
+
+    if (!confirmed) return;
+
+    setButtonLoading(
+        "switchPlayerBtn",
+        true,
+        "ĐANG ĐỔI..."
+    );
+
+    try {
+        // Đăng xuất người chơi hiện tại
+        const { error: signOutError } =
+            await supabaseClient.auth.signOut();
+
+        if (signOutError) throw signOutError;
+
+        // Tạo người chơi ẩn danh mới
+        const { data, error } =
+            await supabaseClient.auth.signInAnonymously();
+
+        if (error) throw error;
+
+        state.user = data.user || data.session?.user;
+
+        if (!state.user) {
+            throw new Error("Không nhận được tài khoản người chơi mới.");
+        }
+
+        // Tải hồ sơ người chơi mới
+        await loadProfile();
+
+        showScreen("homeScreen");
+
+        showNotification(
+            "Đã chuyển sang người chơi mới.",
+            "success"
+        );
+
+    } catch (error) {
+        handleError(error, "Không thể đổi người chơi");
+    } finally {
+        setButtonLoading("switchPlayerBtn", false);
+    }
+}
     // ==========================================
     // 27. INITIALIZE APPLICATION
     // ==========================================
